@@ -31,6 +31,8 @@ ORG_BACKUP_EXCLUDED_TABLES = {
     "user_roles",
     "sessions",
     "api_tokens",
+    "audit_events",
+    "lineage_events",
 }
 
 

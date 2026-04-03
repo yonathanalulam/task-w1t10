@@ -107,7 +107,7 @@ def test_ops_retention_backup_restore_and_audit(client, test_user):
         headers={"X-CSRF-Token": csrf},
         json={"backup_file_name": backup_file_name},
     )
-    assert run_restore.status_code == 200
+    assert run_restore.status_code == 200, run_restore.text
     assert run_restore.json()["status"] == "succeeded"
 
     projects = client.get("/api/projects")
@@ -421,7 +421,7 @@ def test_backup_restore_remains_tenant_scoped(client, test_user, other_org_admin
         headers={"X-CSRF-Token": csrf_a_restore},
         json={"backup_file_name": backup_file_name},
     )
-    assert restore_org_a.status_code == 200
+    assert restore_org_a.status_code == 200, restore_org_a.text
 
     org_a_datasets = client.get("/api/datasets")
     assert org_a_datasets.status_code == 200
