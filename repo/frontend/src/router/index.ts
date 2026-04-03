@@ -12,6 +12,39 @@ import WorkspaceForbiddenView from "../views/WorkspaceForbiddenView.vue";
 import { useAuthStore } from "../stores/auth";
 import { resolveRouteAccess } from "./access";
 
+const FAST_AUTH_REFRESH_TIMEOUT_MS = 1500;
+
+function routeNeedsAuth(to: Parameters<typeof resolveRouteAccess>[0]): boolean {
+  if (to.meta?.requiresAuth === true) {
+    return true;
+  }
+  return to.matched?.some((record) => record.meta?.requiresAuth === true) ?? false;
+}
+
+function snapshotAuth(authStore: ReturnType<typeof useAuthStore>) {
+  return {
+    isAuthenticated: authStore.isAuthenticated,
+    isOrgAdmin: authStore.isOrgAdmin,
+    canAudit: authStore.canAudit,
+    isPlanner: authStore.isPlanner
+  };
+}
+
+async function refreshAuthWithTimeout(authStore: ReturnType<typeof useAuthStore>, timeoutMs: number): Promise<boolean> {
+  let completed = false;
+
+  await Promise.race([
+    authStore.bootstrap().finally(() => {
+      completed = true;
+    }),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, timeoutMs);
+    })
+  ]);
+
+  return completed;
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -88,12 +121,19 @@ export const router = createRouter({
 
 router.beforeEach(async (to) => {
   const authStore = useAuthStore();
-  await authStore.bootstrap();
+  const needsAuth = routeNeedsAuth(to);
 
-  return resolveRouteAccess(to, {
-    isAuthenticated: authStore.isAuthenticated,
-    isOrgAdmin: authStore.isOrgAdmin,
-    canAudit: authStore.canAudit,
-    isPlanner: authStore.isPlanner
-  });
+  if (!authStore.initialized) {
+    if (needsAuth) {
+      await authStore.bootstrap();
+    } else {
+      void authStore.bootstrap();
+    }
+  } else if (authStore.isAuthenticated) {
+    await refreshAuthWithTimeout(authStore, FAST_AUTH_REFRESH_TIMEOUT_MS);
+  } else if (needsAuth) {
+    await authStore.bootstrap();
+  }
+
+  return resolveRouteAccess(to, snapshotAuth(authStore));
 });
