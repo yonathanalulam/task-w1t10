@@ -19,8 +19,10 @@ type AuthResponse = {
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<AuthUser | null>(null);
   const loading = ref(false);
+  const bootstrapping = ref(false);
   const initialized = ref(false);
   const error = ref<string | null>(null);
+  let bootstrapPromise: Promise<void> | null = null;
 
   const isAuthenticated = computed(() => !!user.value);
   const isOrgAdmin = computed(() => user.value?.roles.includes("ORG_ADMIN") ?? false);
@@ -31,20 +33,32 @@ export const useAuthStore = defineStore("auth", () => {
   );
 
   async function bootstrap(): Promise<void> {
-    loading.value = true;
-    try {
-      const response = await apiGet<AuthResponse>("/api/auth/me");
-      user.value = response.user;
-      error.value = null;
-    } catch (err) {
-      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-        user.value = null;
-      }
-      error.value = null;
-    } finally {
-      loading.value = false;
-      initialized.value = true;
+    if (!bootstrapPromise) {
+      bootstrapPromise = (async () => {
+        loading.value = true;
+        bootstrapping.value = true;
+        try {
+          const response = await apiGet<AuthResponse>("/api/auth/me");
+          user.value = response.user;
+          error.value = null;
+        } catch (err) {
+          if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+            user.value = null;
+          }
+          error.value = null;
+        } finally {
+          loading.value = false;
+          bootstrapping.value = false;
+          initialized.value = true;
+        }
+      })();
+
+      bootstrapPromise.finally(() => {
+        bootstrapPromise = null;
+      });
     }
+
+    await bootstrapPromise;
   }
 
   async function login(orgSlug: string, username: string, password: string): Promise<void> {
@@ -83,6 +97,7 @@ export const useAuthStore = defineStore("auth", () => {
   return {
     user,
     loading,
+    bootstrapping,
     initialized,
     error,
     isAuthenticated,

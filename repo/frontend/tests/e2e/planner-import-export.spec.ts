@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 test("planner import receipt handles mixed rows and export downloads csv", async ({ page }) => {
   const creds = resolveE2ECreds();
@@ -14,12 +15,7 @@ test("planner import receipt handles mixed rows and export downloads csv", async
   const projectCode = `E2EI-${suffix.slice(-5)}`;
   const attractionName = `Import Attraction ${suffix}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/datasets");
   await page.getByTestId("dataset-name-input").fill(datasetName);

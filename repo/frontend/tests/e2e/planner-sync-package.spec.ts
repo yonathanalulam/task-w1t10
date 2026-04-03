@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 test("planner offline sync package import/export shows applied and conflict outcomes", async ({ page }) => {
   const creds = resolveE2ECreds();
@@ -16,12 +17,7 @@ test("planner offline sync package import/export shows applied and conflict outc
   const attractionName = `Sync Attraction ${suffix}`;
   const itineraryName = `Sync Itinerary ${suffix}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/datasets");
   await page.getByTestId("dataset-name-input").fill(datasetName);

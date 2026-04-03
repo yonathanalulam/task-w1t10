@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 test("planner UI supports itinerary day/stop flow with warnings and reorder autosave", async ({ page }) => {
   const creds = resolveE2ECreds();
@@ -15,12 +16,7 @@ test("planner UI supports itinerary day/stop flow with warnings and reorder auto
   const attractionAName = `Planner Museum ${suffix}`;
   const attractionBName = `Planner Riverwalk ${suffix}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/datasets");
   await page.waitForURL("**/workspace/datasets");

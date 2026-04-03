@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 test("org admin can manage datasets and projects governance", async ({ page }) => {
   const creds = resolveE2ECreds();
@@ -13,12 +14,7 @@ test("org admin can manage datasets and projects governance", async ({ page }) =
   const projectName = `e2e-project-${suffix}`;
   const projectCode = `E2E-${suffix.slice(-6)}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await expect(page.getByRole("link", { name: "Datasets" })).toBeVisible({ timeout: 20_000 });
   await page.getByRole("link", { name: "Datasets" }).click();
@@ -57,12 +53,7 @@ test("org admin can use operations center retention and backup visibility", asyn
   }
   const { orgSlug, username, password } = creds!;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/operations");
   await page.getByTestId("ops-step-up-password-input").fill(password);

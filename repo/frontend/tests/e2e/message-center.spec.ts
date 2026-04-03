@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 async function createTemplate(page: Page, params: { name: string; category: string; body: string }) {
   await page.getByRole("button", { name: "Clear" }).click();
@@ -34,12 +35,7 @@ test("message center renders variables, sends in-app messages, and enforces caps
   const itineraryName = `e2e-msg-itinerary-${suffix}`;
   const recipientId = `traveler-${suffix}`;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/projects");
   await page.getByTestId("project-name-input").fill(projectName);

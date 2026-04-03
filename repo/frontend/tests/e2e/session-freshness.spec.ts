@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
+import { loginToWorkspace } from "./support/login";
 
 test("route guard refreshes server session state after revocation", async ({ page }) => {
   const creds = resolveE2ECreds();
@@ -8,12 +9,7 @@ test("route guard refreshes server session state after revocation", async ({ pag
   }
   const { orgSlug, username, password } = creds!;
 
-  await page.goto("/login");
-  await page.getByLabel("Organization").fill(orgSlug);
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL("**/workspace/**", { timeout: 45_000 });
+  await loginToWorkspace(page, { orgSlug, username, password });
   await expect(page.getByRole("link", { name: "Planner" })).toBeVisible({ timeout: 20_000 });
 
   const csrfCookie = (await page.context().cookies()).find((cookie) => cookie.name === "trailforge_csrf")?.value;

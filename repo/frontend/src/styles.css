@@ -75,6 +75,13 @@ select {
   flex-direction: column;
 }
 
+.workspace-auth-loading {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;
