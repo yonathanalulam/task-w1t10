@@ -196,7 +196,7 @@ onMounted(loadOperations);
     <p v-if="success" class="planner-import-receipt">{{ success }}</p>
     <p v-if="loading">Loading operations data...</p>
 
-    <div class="admin-grid section-gap" v-if="!loading">
+    <div class="admin-grid section-gap">
       <section class="panel stack" v-if="canMutate">
         <h3>Step-up for sensitive operations</h3>
         <label>

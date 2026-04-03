@@ -1,7 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
-import { apiGet, apiPost } from "../api/client";
+import { ApiError, apiGet, apiPost } from "../api/client";
 
 export type AuthUser = {
   id: string;
@@ -36,8 +36,10 @@ export const useAuthStore = defineStore("auth", () => {
       const response = await apiGet<AuthResponse>("/api/auth/me");
       user.value = response.user;
       error.value = null;
-    } catch {
-      user.value = null;
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        user.value = null;
+      }
       error.value = null;
     } finally {
       loading.value = false;
