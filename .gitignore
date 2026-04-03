@@ -12,3 +12,4 @@ __pycache__/
 logs/
 gh-multi_logs/
 antigravity-logs/
+.opencode/
