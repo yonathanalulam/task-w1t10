@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -43,7 +43,8 @@ function readCredsFile(filePath) {
   }
 
   try {
-    return parseCredsText(fs.readFileSync(filePath, "utf-8"));
+    const helperPath = path.resolve(REPO_ROOT, "frontend", "scripts", "read_bootstrap_credentials.mjs");
+    return parseCredsText(execFileSync("node", [helperPath, filePath], { encoding: "utf-8" }));
   } catch {
     return null;
   }
@@ -72,7 +73,7 @@ function resolveCreds() {
   }
 
   try {
-    const output = execSync("docker compose exec -T backend cat /bootstrap/admin_credentials.txt", {
+    const output = execSync("docker compose exec -T backend python scripts/read_bootstrap_credentials.py", {
       cwd: REPO_ROOT,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf-8"

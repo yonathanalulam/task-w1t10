@@ -26,7 +26,7 @@ This repository currently provides a production-oriented foundation through **Sl
 - project-scoped message center with reusable templates, variable render preview, in-app drafting/send flow, delivery-attempt timeline, offline connector abstraction points, and enforced frequency caps
 - immutable audit-trail events for sensitive domain/operator actions with query surface
 - lineage-event foundations for merge/import/sync visibility
-- configurable itinerary retention policy (default 3 years) with operator run visibility
+- configurable itinerary retention policy (default 3 years) plus strict 1-year audit/lineage retention with operator run visibility
 - encrypted backup/restore foundations with organization-scoped UI/API behavior, automatic nightly run support, 14-day backup rotation, and persisted success/failure run history
 
 ## What exists now
@@ -172,17 +172,19 @@ pytest -q
 
 ## First-run credentials
 
-On first startup, backend creates a one-time bootstrap admin password and writes it to:
+On first startup, backend creates one-time bootstrap admin credentials and stores the password encrypted at rest in:
 
 ```text
 /bootstrap/admin_credentials.txt
 ```
 
-Read it with:
+Read and consume it once with:
 
 ```bash
-docker compose exec backend cat /bootstrap/admin_credentials.txt
+docker compose exec backend python scripts/read_bootstrap_credentials.py
 ```
+
+The helper decrypts the envelope and deletes it after a successful read, so `cat /bootstrap/admin_credentials.txt` is no longer the bootstrap flow.
 
 Change credentials in later slices via admin flows (not implemented yet).
 
@@ -192,7 +194,7 @@ Change credentials in later slices via admin flows (not implemented yet).
 - Postgres uses `POSTGRES_PASSWORD_FILE` from that volume.
 - Backend composes its DB URL at runtime from the same password file.
 - Backup encryption key is generated at runtime into the same secret volume (`/run/secrets/backup_encryption_key`) and used for encrypted backup files.
-- Compose also runs an `ops-daemon` service that executes periodic operations cycles: nightly encrypted backups and cleanup deletion for unreferenced assets that have passed the 30-day grace window.
+- Compose also runs an `ops-daemon` service that executes periodic operations cycles: nightly encrypted backups, retention cleanup (including strict 1-year audit/lineage enforcement), and cleanup deletion for unreferenced assets that have passed the 30-day grace window.
 - No committed `.env` file or committed static DB password is used.
 
 If you intentionally reset local runtime state, remove both DB and runtime secret volumes together:
@@ -223,12 +225,12 @@ docker compose exec backend python scripts/nightly_backup.py
 Playwright E2E specs resolve bootstrap credentials in this order:
 
 1. `E2E_ORG_SLUG` + `E2E_USERNAME` + `E2E_PASSWORD` env vars
-2. `E2E_BOOTSTRAP_CREDS_FILE` file path
-3. `/bootstrap/admin_credentials.txt`
-4. `/tmp/trailforge-e2e-runtime/bootstrap/admin_credentials.txt`
-5. running `docker compose exec -T backend cat /bootstrap/admin_credentials.txt`
+2. `E2E_BOOTSTRAP_CREDS_FILE` consumed through `frontend/scripts/read_bootstrap_credentials.mjs`
+3. `/bootstrap/admin_credentials.txt` consumed through `frontend/scripts/read_bootstrap_credentials.mjs`
+4. `/tmp/trailforge-e2e-runtime/bootstrap/admin_credentials.txt` consumed through `frontend/scripts/read_bootstrap_credentials.mjs`
+5. running `docker compose exec -T backend python scripts/read_bootstrap_credentials.py`
 
-This makes local/browser E2E runs less environment-fragile while keeping secret handling runtime-based.
+The helper decrypts the bootstrap envelope and removes it after successful use, which keeps the password off disk in plaintext while preserving runtime bootstrap for CI and local review flows.
 
 ## Reviewer walkthrough video capture
 

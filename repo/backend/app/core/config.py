@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     asset_upload_max_bytes: int = 20 * 1024 * 1024
     asset_cleanup_grace_days: int = 30
     itinerary_retention_default_days: int = 365 * 3
+    audit_retention_days: int = Field(default=365, ge=365, le=365)
+    lineage_retention_days: int = Field(default=365, ge=365, le=365)
     backup_root: str = "/var/lib/trailforge/backups"
     backup_rotation_days: int = 14
     backup_encryption_key_path: str = "/run/secrets/backup_encryption_key"

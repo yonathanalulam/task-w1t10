@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.core.config import get_settings
+from app.core.security import utcnow
+from app.models.organization import Organization
 from app.models.resource_center import ResourceAsset
+from app.services.operations import run_asset_cleanup_cycle, run_itinerary_retention
 from app.services.resource_center import run_cleanup_eligible_assets
 
 
@@ -217,11 +223,11 @@ def test_resource_center_cleanup_deletes_only_eligible_unreferenced_assets(clien
 
     unreferenced_row = db.get(ResourceAsset, unreferenced_asset["id"])
     assert unreferenced_row is not None
-    unreferenced_row.cleanup_eligible_at = unreferenced_row.created_at
+    unreferenced_row.cleanup_eligible_at = utcnow() - timedelta(days=get_settings().asset_cleanup_grace_days + 1)
 
     referenced_row = db.get(ResourceAsset, referenced_asset["id"])
     assert referenced_row is not None
-    referenced_row.cleanup_eligible_at = referenced_row.created_at
+    referenced_row.cleanup_eligible_at = utcnow() - timedelta(days=get_settings().asset_cleanup_grace_days + 1)
     db.add(unreferenced_row)
     db.add(referenced_row)
     db.commit()
@@ -239,3 +245,61 @@ def test_resource_center_cleanup_deletes_only_eligible_unreferenced_assets(clien
     assert db.get(ResourceAsset, referenced_asset["id"]) is not None
     assert not delete_target_path.exists()
     assert keep_target_path.exists()
+
+
+def test_resource_center_cleanup_marks_indirectly_orphaned_itinerary_assets(client, db, test_user):
+    csrf = login(client, test_user)
+    project_id, _, _ = create_project_dataset_attraction(client, csrf, suffix="retention-orphan")
+    itinerary_id = create_itinerary(client, csrf, project_id=project_id, suffix="retention-orphan")
+
+    upload_itinerary = client.post(
+        f"/api/projects/{project_id}/resources/itineraries/{itinerary_id}/assets",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("orphaned.pdf", b"%PDF-1.7\norphaned\n", "application/pdf")},
+    )
+    assert upload_itinerary.status_code == 201
+    asset_id = upload_itinerary.json()["asset"]["id"]
+
+    asset = db.get(ResourceAsset, asset_id)
+    assert asset is not None
+    storage_root = Path(get_settings().asset_storage_root)
+    asset_path = storage_root / asset.storage_key
+    assert asset_path.exists()
+
+    itinerary = asset.itinerary
+    assert itinerary is not None
+    itinerary.status = "archived"
+    itinerary.updated_at = utcnow() - timedelta(days=get_settings().itinerary_retention_default_days + 10)
+    db.add(itinerary)
+    db.commit()
+
+    org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
+    run_itinerary_retention(db, org_id=org.id, actor_user_id=test_user["user_id"])
+
+    db.expire_all()
+    orphaned_asset = db.get(ResourceAsset, asset_id)
+    assert orphaned_asset is not None
+    assert orphaned_asset.cleanup_eligible_at is None
+    assert db.get(type(itinerary), itinerary_id) is None
+
+    marked_count, deleted_count = run_asset_cleanup_cycle(db, max_delete=20)
+    assert marked_count >= 1
+    assert deleted_count == 0
+
+    db.expire_all()
+    marked_asset = db.get(ResourceAsset, asset_id)
+    assert marked_asset is not None
+    assert marked_asset.itinerary_id is None
+    assert marked_asset.attraction_id is None
+    assert marked_asset.cleanup_eligible_at is not None
+    assert asset_path.exists()
+
+    marked_asset.cleanup_eligible_at = utcnow() - timedelta(days=get_settings().asset_cleanup_grace_days + 1)
+    db.add(marked_asset)
+    db.commit()
+
+    marked_count_second, deleted_count_second = run_asset_cleanup_cycle(db, max_delete=20)
+    assert marked_count_second == 0
+    assert deleted_count_second == 1
+    assert db.get(ResourceAsset, asset_id) is None
+    assert not asset_path.exists()

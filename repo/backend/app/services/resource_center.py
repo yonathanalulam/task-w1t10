@@ -5,7 +5,7 @@ import hashlib
 import io
 import zipfile
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -507,24 +507,55 @@ def unreference_asset(
 
     asset.attraction_id = None
     asset.itinerary_id = None
-    asset.cleanup_eligible_at = utcnow() + timedelta(days=get_settings().asset_cleanup_grace_days)
+    asset.cleanup_eligible_at = utcnow()
     db.add(asset)
     db.commit()
     db.refresh(asset)
     return asset
 
 
+def mark_orphaned_assets_cleanup_eligible(db: Session, *, orphaned_at: datetime | None = None) -> int:
+    timestamp = orphaned_at or utcnow()
+    candidate_assets = list(
+        db.execute(select(ResourceAsset).where(ResourceAsset.cleanup_eligible_at.is_(None))).scalars().all()
+    )
+
+    marked_count = 0
+    for asset in candidate_assets:
+        attraction_missing = asset.attraction_id is not None and db.get(Attraction, asset.attraction_id) is None
+        itinerary_missing = asset.itinerary_id is not None and db.get(Itinerary, asset.itinerary_id) is None
+        if not (
+            (asset.attraction_id is None and asset.itinerary_id is None)
+            or attraction_missing
+            or itinerary_missing
+        ):
+            continue
+
+        asset.attraction_id = None
+        asset.itinerary_id = None
+        asset.cleanup_eligible_at = timestamp
+        db.add(asset)
+        marked_count += 1
+
+    if not marked_count:
+        return 0
+
+    db.commit()
+    return marked_count
+
+
 def run_cleanup_eligible_assets(db: Session, *, max_delete: int | None = None) -> int:
     now = utcnow()
     settings = get_settings()
     clamped_limit = max(1, min(max_delete or settings.asset_cleanup_batch_size, 2000))
+    eligible_cutoff = now - timedelta(days=settings.asset_cleanup_grace_days)
 
     candidate_ids = list(
         db.execute(
             select(ResourceAsset.id)
             .where(
                 ResourceAsset.cleanup_eligible_at.is_not(None),
-                ResourceAsset.cleanup_eligible_at <= now,
+                ResourceAsset.cleanup_eligible_at <= eligible_cutoff,
                 ResourceAsset.attraction_id.is_(None),
                 ResourceAsset.itinerary_id.is_(None),
             )
@@ -546,7 +577,7 @@ def run_cleanup_eligible_assets(db: Session, *, max_delete: int | None = None) -
                 select(ResourceAsset).where(
                     ResourceAsset.id == asset_id,
                     ResourceAsset.cleanup_eligible_at.is_not(None),
-                    ResourceAsset.cleanup_eligible_at <= now,
+                    ResourceAsset.cleanup_eligible_at <= eligible_cutoff,
                     ResourceAsset.attraction_id.is_(None),
                     ResourceAsset.itinerary_id.is_(None),
                 )

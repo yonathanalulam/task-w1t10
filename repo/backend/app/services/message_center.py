@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.security import utcnow
 from app.models.governance import Project, ProjectMember
 from app.models.message_center import MessageDeliveryAttempt, MessageDispatch, MessageTemplate
+from app.models.organization import Organization
 from app.models.planner import Itinerary
 from app.models.user import User
 from app.services.message_delivery import MessageDeliveryRequest, build_default_connector_registry
@@ -406,6 +407,12 @@ def _enforce_frequency_caps(
         raise MessageCenterValidationError("Hourly category cap reached: max 1 message per hour for this template category")
 
 
+def _lock_message_frequency_scope(db: Session, *, org_id: str) -> None:
+    lock_row = db.execute(select(Organization).where(Organization.id == org_id).with_for_update()).scalars().first()
+    if not lock_row:
+        raise MessageCenterValidationError("Organization scope not found for message dispatch")
+
+
 def send_message(
     db: Session,
     *,
@@ -469,6 +476,7 @@ def send_message(
         )
 
     now = utcnow()
+    _lock_message_frequency_scope(db, org_id=org_id)
     _enforce_frequency_caps(
         db,
         org_id=org_id,

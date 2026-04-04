@@ -4,6 +4,8 @@ export type RetentionPolicy = {
   id: string;
   org_id: string;
   itinerary_retention_days: number;
+  audit_retention_days: number;
+  lineage_retention_days: number;
   updated_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -15,6 +17,8 @@ export type RetentionRun = {
   initiated_by_user_id: string | null;
   status: string;
   deleted_itinerary_count: number;
+  deleted_audit_event_count: number;
+  deleted_lineage_event_count: number;
   summary: string | null;
   started_at: string;
   completed_at: string | null;

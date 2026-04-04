@@ -35,6 +35,8 @@ def _retention_policy_out(row) -> RetentionPolicyOut:
         id=row.id,
         org_id=row.org_id,
         itinerary_retention_days=row.itinerary_retention_days,
+        audit_retention_days=row.audit_retention_days,
+        lineage_retention_days=row.lineage_retention_days,
         updated_by_user_id=row.updated_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -48,6 +50,8 @@ def _retention_run_out(row) -> RetentionRunOut:
         initiated_by_user_id=row.initiated_by_user_id,
         status=row.status,
         deleted_itinerary_count=row.deleted_itinerary_count,
+        deleted_audit_event_count=row.deleted_audit_event_count,
+        deleted_lineage_event_count=row.deleted_lineage_event_count,
         summary=row.summary,
         started_at=row.started_at,
         completed_at=row.completed_at,
@@ -151,8 +155,12 @@ def retention_policy_update(
         request_method="PATCH",
         request_path="/api/ops/retention-policy",
         status_code=200,
-        detail_summary="Updated itinerary retention policy",
-        metadata_json={"itinerary_retention_days": row.itinerary_retention_days},
+        detail_summary="Updated retention policy; audit and lineage remain fixed at 365 days",
+        metadata_json={
+            "itinerary_retention_days": row.itinerary_retention_days,
+            "audit_retention_days": row.audit_retention_days,
+            "lineage_retention_days": row.lineage_retention_days,
+        },
     )
     return _retention_policy_out(row)
 
@@ -173,8 +181,12 @@ def retention_run(
         request_method="POST",
         request_path="/api/ops/retention/run",
         status_code=200,
-        detail_summary="Executed itinerary retention run",
-        metadata_json={"deleted_itinerary_count": row.deleted_itinerary_count},
+        detail_summary="Executed itinerary, audit, and lineage retention run",
+        metadata_json={
+            "deleted_itinerary_count": row.deleted_itinerary_count,
+            "deleted_audit_event_count": row.deleted_audit_event_count,
+            "deleted_lineage_event_count": row.deleted_lineage_event_count,
+        },
     )
     return _retention_run_out(row)
 

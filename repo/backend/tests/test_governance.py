@@ -148,6 +148,29 @@ def test_project_membership_management(client, test_user):
     )
     assert remove_member.status_code == 204
 
+    audit_events = client.get("/api/ops/audit/events?limit=50")
+    assert audit_events.status_code == 200
+    rows = audit_events.json()
+
+    created = next(row for row in rows if row["action_type"] == "governance.project_member_created")
+    assert created["resource_id"] == member_id
+    assert created["metadata_json"]["project_id"] == project_id
+    assert created["metadata_json"]["user_id"] == admin_id
+    assert created["metadata_json"]["role_in_project"] == "owner"
+    assert created["metadata_json"]["can_edit"] is True
+
+    updated = next(row for row in rows if row["action_type"] == "governance.project_member_updated")
+    assert updated["resource_id"] == member_id
+    assert updated["metadata_json"]["role_in_project"] == "reviewer"
+    assert updated["metadata_json"]["can_edit"] is False
+
+    deleted = next(row for row in rows if row["action_type"] == "governance.project_member_deleted")
+    assert deleted["resource_id"] == member_id
+    assert deleted["metadata_json"]["project_id"] == project_id
+    assert deleted["metadata_json"]["user_id"] == admin_id
+    assert deleted["metadata_json"]["role_in_project"] == "reviewer"
+    assert deleted["metadata_json"]["can_edit"] is False
+
 
 def test_org_admin_can_manage_attractions_duplicates_and_merge(client, test_user):
     csrf = login(client, test_user)

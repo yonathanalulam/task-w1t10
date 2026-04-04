@@ -6,8 +6,7 @@ import time
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.security import utcnow
-from app.services.operations import run_nightly_backups_for_all_orgs
-from app.services.resource_center import run_cleanup_eligible_assets
+from app.services.operations import run_asset_cleanup_cycle, run_nightly_backups_for_all_orgs, run_retention_for_all_orgs
 
 logger = logging.getLogger("trailforge.operations_daemon")
 
@@ -16,9 +15,17 @@ def run_cycle() -> None:
     settings = get_settings()
     now = utcnow()
     with SessionLocal() as db:
-        cleanup_deleted = run_cleanup_eligible_assets(db, max_delete=settings.asset_cleanup_batch_size)
-        if cleanup_deleted:
-            logger.info("Asset cleanup deleted %s assets", cleanup_deleted)
+        cleanup_marked, cleanup_deleted = run_asset_cleanup_cycle(db, max_delete=settings.asset_cleanup_batch_size)
+        if cleanup_marked or cleanup_deleted:
+            logger.info(
+                "Asset cleanup cycle completed; marked_orphaned=%s deleted=%s",
+                cleanup_marked,
+                cleanup_deleted,
+            )
+
+        retention_runs = run_retention_for_all_orgs(db)
+        if retention_runs:
+            logger.info("Retention cycle completed; created_runs=%s", retention_runs)
 
         if now.hour == settings.nightly_backup_hour_utc:
             created_runs = run_nightly_backups_for_all_orgs(db)

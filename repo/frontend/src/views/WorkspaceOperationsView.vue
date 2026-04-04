@@ -210,12 +210,28 @@ onMounted(loadOperations);
 
       <section class="panel stack">
         <h3>Itinerary retention policy</h3>
-        <p class="muted-inline">Default is 3 years (1095 days).</p>
+        <p class="muted-inline">Itinerary retention is configurable. Audit and lineage retention are fixed at 1 year.</p>
         <label v-if="canMutate">
-          Retention days
+          Itinerary retention days
           <input v-model="retentionDaysInput" data-testid="ops-retention-days-input" type="number" min="30" />
         </label>
-        <p v-else class="muted-inline">Configured retention days: {{ retentionPolicy?.itinerary_retention_days ?? "n/a" }}</p>
+        <p v-else class="muted-inline">
+          Configured itinerary retention days: {{ retentionPolicy?.itinerary_retention_days ?? "n/a" }}
+        </p>
+        <ul class="list-items" v-if="retentionPolicy">
+          <li class="list-item">
+            <div>
+              <strong>Current retention windows</strong>
+              <p class="muted-inline">itinerary_retention_days={{ retentionPolicy.itinerary_retention_days }}</p>
+              <p class="muted-inline">audit_retention_days={{ retentionPolicy.audit_retention_days }}</p>
+              <p class="muted-inline">lineage_retention_days={{ retentionPolicy.lineage_retention_days }}</p>
+              <p class="muted-inline">
+                itineraries={{ retentionPolicy.itinerary_retention_days }} days • audit={{ retentionPolicy.audit_retention_days }}
+                days • lineage={{ retentionPolicy.lineage_retention_days }} days
+              </p>
+            </div>
+          </li>
+        </ul>
         <div class="actions-row" v-if="canMutate">
           <button class="btn" data-testid="ops-retention-save-btn" :disabled="savingPolicy" @click="saveRetentionPolicy">
             {{ savingPolicy ? "Saving..." : "Save policy" }}
@@ -233,7 +249,14 @@ onMounted(loadOperations);
           <li v-for="run in retentionRuns" :key="run.id" class="list-item" data-testid="ops-retention-run-item">
             <div>
               <strong>{{ run.status }}</strong>
-              <p class="muted-inline">{{ run.started_at }} • deleted={{ run.deleted_itinerary_count }}</p>
+              <p class="muted-inline">deleted_audit_event_count={{ run.deleted_audit_event_count }}</p>
+              <p class="muted-inline">deleted_lineage_event_count={{ run.deleted_lineage_event_count }}</p>
+              <p class="muted-inline">
+                {{ run.started_at }} • deleted itineraries={{ run.deleted_itinerary_count }} • audit={{
+                  run.deleted_audit_event_count
+                }} • lineage={{ run.deleted_lineage_event_count }}
+              </p>
+              <p v-if="run.summary" class="muted-inline">{{ run.summary }}</p>
             </div>
           </li>
         </ul>

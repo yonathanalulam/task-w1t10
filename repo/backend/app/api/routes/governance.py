@@ -82,6 +82,28 @@ def _duplicate_label_from_key(key: str) -> str:
     return f"{parts[0]} / {parts[1]}, {parts[2]}"
 
 
+def _project_member_out(member) -> ProjectMemberOut:
+    return ProjectMemberOut(
+        id=member.id,
+        user_id=member.user_id,
+        username=member.user.username,
+        role_in_project=member.role_in_project,
+        can_edit=member.can_edit,
+        created_at=member.created_at,
+        updated_at=member.updated_at,
+    )
+
+
+def _project_member_audit_metadata(*, project_id: str, member) -> dict:
+    return {
+        "project_id": project_id,
+        "user_id": member.user_id,
+        "username": member.user.username,
+        "role_in_project": member.role_in_project,
+        "can_edit": member.can_edit,
+    }
+
+
 @router.get("/admin/users", response_model=list[OrgUserOut])
 def org_users(
     auth_session: AuthSession = Depends(org_admin_session_dep),
@@ -497,15 +519,21 @@ def projects_members_create(
             detail="Project or user not found in your organization",
         )
 
-    return ProjectMemberOut(
-        id=member.id,
-        user_id=member.user_id,
-        username=member.user.username,
-        role_in_project=member.role_in_project,
-        can_edit=member.can_edit,
-        created_at=member.created_at,
-        updated_at=member.updated_at,
+    record_audit_event(
+        db,
+        org_id=auth_session.user.org_id,
+        actor_user_id=auth_session.user_id,
+        action_type="governance.project_member_created",
+        resource_type="project_member",
+        resource_id=member.id,
+        request_method="POST",
+        request_path=f"/api/projects/{project_id}/members",
+        status_code=201,
+        project_id=project_id,
+        detail_summary="Added project member permissions",
+        metadata_json=_project_member_audit_metadata(project_id=project_id, member=member),
     )
+    return _project_member_out(member)
 
 
 @router.patch("/projects/{project_id}/members/{member_id}", response_model=ProjectMemberOut)
@@ -528,15 +556,21 @@ def projects_members_update(
     if not member:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project member not found")
 
-    return ProjectMemberOut(
-        id=member.id,
-        user_id=member.user_id,
-        username=member.user.username,
-        role_in_project=member.role_in_project,
-        can_edit=member.can_edit,
-        created_at=member.created_at,
-        updated_at=member.updated_at,
+    record_audit_event(
+        db,
+        org_id=auth_session.user.org_id,
+        actor_user_id=auth_session.user_id,
+        action_type="governance.project_member_updated",
+        resource_type="project_member",
+        resource_id=member.id,
+        request_method="PATCH",
+        request_path=f"/api/projects/{project_id}/members/{member_id}",
+        status_code=200,
+        project_id=project_id,
+        detail_summary="Updated project member permissions",
+        metadata_json=_project_member_audit_metadata(project_id=project_id, member=member),
     )
+    return _project_member_out(member)
 
 
 @router.delete("/projects/{project_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -547,6 +581,13 @@ def projects_members_delete(
     auth_session: AuthSession = Depends(org_admin_csrf_session_dep),
     db: Session = Depends(db_dep),
 ) -> None:
+    existing_member = next(
+        (row for row in list_project_members(db, org_id=auth_session.user.org_id, project_id=project_id) if row.id == member_id),
+        None,
+    )
+    if not existing_member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project member not found")
+
     deleted = remove_project_member(
         db,
         org_id=auth_session.user.org_id,
@@ -555,6 +596,21 @@ def projects_members_delete(
     )
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project member not found")
+
+    record_audit_event(
+        db,
+        org_id=auth_session.user.org_id,
+        actor_user_id=auth_session.user_id,
+        action_type="governance.project_member_deleted",
+        resource_type="project_member",
+        resource_id=member_id,
+        request_method="DELETE",
+        request_path=f"/api/projects/{project_id}/members/{member_id}",
+        status_code=204,
+        project_id=project_id,
+        detail_summary="Removed project member permissions",
+        metadata_json=_project_member_audit_metadata(project_id=project_id, member=existing_member),
+    )
 
 
 @router.get("/projects/{project_id}/datasets", response_model=list[ProjectDatasetOut])

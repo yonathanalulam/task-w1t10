@@ -64,6 +64,8 @@ class RetentionPolicy(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     itinerary_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1095)
+    audit_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=365)
+    lineage_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=365)
     updated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     updated_by_user: Mapped["User | None"] = relationship()
@@ -77,6 +79,8 @@ class RetentionRun(Base, TimestampMixin):
     initiated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     deleted_itinerary_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_audit_event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_lineage_event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

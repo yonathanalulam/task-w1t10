@@ -37,6 +37,8 @@ class RetentionPolicyOut(BaseModel):
     id: str
     org_id: str
     itinerary_retention_days: int
+    audit_retention_days: int
+    lineage_retention_days: int
     updated_by_user_id: str | None
     created_at: datetime
     updated_at: datetime
@@ -52,6 +54,8 @@ class RetentionRunOut(BaseModel):
     initiated_by_user_id: str | None
     status: str
     deleted_itinerary_count: int
+    deleted_audit_event_count: int
+    deleted_lineage_event_count: int
     summary: str | None
     started_at: datetime
     completed_at: datetime | None

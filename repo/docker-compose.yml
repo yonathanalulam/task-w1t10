@@ -169,7 +169,7 @@ services:
       E2E_BOOTSTRAP_CREDS_FILE: /bootstrap/admin_credentials.txt
     volumes:
       - trailforge_certs:/certs:ro
-      - trailforge_bootstrap:/bootstrap:ro
+      - trailforge_bootstrap:/bootstrap
       - ./frontend/test-results:/app/frontend/test-results
       - ./frontend/playwright-report:/app/frontend/playwright-report
     command: ["bash", "-lc", "bash ./scripts/run_e2e_with_bootstrap.sh"]

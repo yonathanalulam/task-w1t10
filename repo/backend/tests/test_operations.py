@@ -12,9 +12,9 @@ from sqlalchemy import func, select
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.models.operations import BackupRun
+from app.models.operations import AuditEvent, BackupRun, LineageEvent, RetentionPolicy, RetentionRun
 from app.models.organization import Organization
-from app.services.operations import run_nightly_backups_for_all_orgs
+from app.services.operations import run_encrypted_backup, run_itinerary_retention, run_nightly_backups_for_all_orgs, run_restore_from_backup, run_retention_for_all_orgs
 
 
 def login(client, creds: dict[str, str]) -> str:
@@ -225,6 +225,244 @@ def test_nightly_backup_cycle_covers_all_orgs_and_deduplicates(db, other_org_adm
         .where(BackupRun.trigger_kind == "nightly", BackupRun.status == "succeeded")
     ).scalar_one()
     assert nightly_success_count == org_count
+
+
+def test_backup_snapshot_includes_security_and_compliance_tables(client, db, test_user):
+    org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
+    old_audit = AuditEvent(
+        org_id=org.id,
+        actor_user_id=test_user["user_id"],
+        action_type="pytest.backup_scope",
+        resource_type="backup_scope",
+        resource_id="audit-scope-row",
+        request_method="POST",
+        request_path="/pytest/backup-scope",
+        status_code=200,
+        detail_summary="backup scope test",
+        metadata_json={"source": "pytest"},
+        occurred_at=datetime.now(UTC),
+    )
+    old_lineage = LineageEvent(
+        org_id=org.id,
+        created_by_user_id=test_user["user_id"],
+        event_type="pytest.backup_scope",
+        entity_type="backup_scope",
+        entity_id="lineage-scope-row",
+        payload={"source": "pytest"},
+        occurred_at=datetime.now(UTC),
+    )
+    db.add(old_audit)
+    db.add(old_lineage)
+    db.commit()
+
+    csrf = login(client, test_user)
+    run_backup = client.post("/api/ops/backups/run", headers={"X-CSRF-Token": csrf})
+    assert run_backup.status_code == 200
+
+    settings = get_settings()
+    backup_path = Path(settings.backup_root) / run_backup.json()["backup_file_name"]
+    cipher = Fernet(Path(settings.backup_encryption_key_path).read_bytes().strip())
+    payload = json.loads(gzip.decompress(cipher.decrypt(backup_path.read_bytes())).decode("utf-8"))
+    tables = {table_blob["table_name"]: table_blob["rows"] for table_blob in payload["tables"]}
+
+    required_tables = {"users", "roles", "role_permissions", "user_roles", "audit_events", "lineage_events"}
+    assert required_tables.issubset(tables)
+    assert any(row["id"] == test_user["user_id"] for row in tables["users"])
+    assert tables["roles"]
+    assert tables["role_permissions"]
+    assert tables["user_roles"]
+    assert any(row["id"] == old_audit.id for row in tables["audit_events"])
+    assert any(row["id"] == old_lineage.id for row in tables["lineage_events"])
+
+
+def test_retention_run_prunes_stale_audit_and_lineage_records(db, test_user):
+    org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
+    stale_time = datetime.now(UTC) - timedelta(days=366)
+    fresh_time = datetime.now(UTC) - timedelta(days=30)
+
+    stale_audit = AuditEvent(
+        org_id=org.id,
+        actor_user_id=test_user["user_id"],
+        action_type="pytest.retention.stale_audit",
+        resource_type="retention",
+        resource_id="stale-audit",
+        request_method="POST",
+        request_path="/pytest/retention",
+        status_code=200,
+        detail_summary="stale audit",
+        metadata_json=None,
+        occurred_at=stale_time,
+    )
+    fresh_audit = AuditEvent(
+        org_id=org.id,
+        actor_user_id=test_user["user_id"],
+        action_type="pytest.retention.fresh_audit",
+        resource_type="retention",
+        resource_id="fresh-audit",
+        request_method="POST",
+        request_path="/pytest/retention",
+        status_code=200,
+        detail_summary="fresh audit",
+        metadata_json=None,
+        occurred_at=fresh_time,
+    )
+    stale_lineage = LineageEvent(
+        org_id=org.id,
+        created_by_user_id=test_user["user_id"],
+        event_type="pytest.retention.stale_lineage",
+        entity_type="retention",
+        entity_id="stale-lineage",
+        payload={"kind": "stale"},
+        occurred_at=stale_time,
+    )
+    fresh_lineage = LineageEvent(
+        org_id=org.id,
+        created_by_user_id=test_user["user_id"],
+        event_type="pytest.retention.fresh_lineage",
+        entity_type="retention",
+        entity_id="fresh-lineage",
+        payload={"kind": "fresh"},
+        occurred_at=fresh_time,
+    )
+    db.add_all([stale_audit, fresh_audit, stale_lineage, fresh_lineage])
+    db.commit()
+
+    run = run_itinerary_retention(db, org_id=org.id, actor_user_id=test_user["user_id"])
+
+    assert run.deleted_audit_event_count == 1
+    assert run.deleted_lineage_event_count == 1
+
+    remaining_audit_ids = set(db.execute(select(AuditEvent.id)).scalars().all())
+    remaining_lineage_ids = set(db.execute(select(LineageEvent.id)).scalars().all())
+    assert stale_audit.id not in remaining_audit_ids
+    assert fresh_audit.id in remaining_audit_ids
+    assert stale_lineage.id not in remaining_lineage_ids
+    assert fresh_lineage.id in remaining_lineage_ids
+
+    policy = db.execute(select(RetentionPolicy).where(RetentionPolicy.org_id == org.id)).scalars().one()
+    assert policy.audit_retention_days == 365
+    assert policy.lineage_retention_days == 365
+
+
+def test_retention_cycle_covers_all_orgs_and_deduplicates(db, other_org_admin):
+    del other_org_admin  # fixture ensures second org exists
+
+    org_count = db.execute(select(func.count()).select_from(Organization)).scalar_one()
+    created_first = run_retention_for_all_orgs(db)
+    assert created_first == org_count
+
+    created_second = run_retention_for_all_orgs(db)
+    assert created_second == 0
+
+    retention_success_count = db.execute(
+        select(func.count())
+        .select_from(RetentionRun)
+        .where(RetentionRun.status == "succeeded")
+    ).scalar_one()
+    assert retention_success_count == org_count
+
+
+def test_postgresql_like_retention_and_restore_toggle_immutable_triggers(db, test_user, monkeypatch):
+    org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
+
+    for statement in [
+        "DROP TRIGGER IF EXISTS trg_audit_events_immutable_update",
+        "DROP TRIGGER IF EXISTS trg_audit_events_immutable_delete",
+        "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_update",
+        "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_delete",
+    ]:
+        db.execute(text(statement))
+    db.commit()
+
+    stale_time = datetime.now(UTC) - timedelta(days=400)
+    db.add(
+        AuditEvent(
+            org_id=org.id,
+            actor_user_id=test_user["user_id"],
+            action_type="pytest.pg_retention",
+            resource_type="retention",
+            resource_id="pg-audit-stale",
+            request_method="POST",
+            request_path="/pytest/pg-retention",
+            status_code=200,
+            detail_summary="stale audit",
+            metadata_json=None,
+            occurred_at=stale_time,
+        )
+    )
+    db.add(
+        LineageEvent(
+            org_id=org.id,
+            created_by_user_id=test_user["user_id"],
+            event_type="pytest.pg_retention",
+            entity_type="retention",
+            entity_id="pg-lineage-stale",
+            payload={"kind": "stale"},
+            occurred_at=stale_time,
+        )
+    )
+    db.commit()
+
+    original_execute = db.execute
+    pg_sql: list[str] = []
+
+    def tracked_execute(statement, *args, **kwargs):
+        rendered = str(statement).strip()
+        if rendered.startswith('ALTER TABLE "audit_events"') or rendered.startswith('ALTER TABLE "lineage_events"'):
+            pg_sql.append(rendered)
+
+            class _Result:
+                rowcount = 0
+
+            return _Result()
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db.bind.dialect, "name", "postgresql", raising=False)
+    monkeypatch.setattr(db, "execute", tracked_execute)
+
+    retention_run = run_itinerary_retention(db, org_id=org.id, actor_user_id=test_user["user_id"])
+    assert retention_run.status == "succeeded"
+    assert 'ALTER TABLE "audit_events" DISABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "lineage_events" DISABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "audit_events" ENABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "lineage_events" ENABLE TRIGGER USER' in pg_sql
+
+    pg_sql.clear()
+    backup_run = run_encrypted_backup(
+        db,
+        org_id=org.id,
+        initiated_by_user_id=test_user["user_id"],
+        trigger_kind="manual",
+        enforce_one_per_day=False,
+    )
+    db.add(
+        AuditEvent(
+            org_id=org.id,
+            actor_user_id=test_user["user_id"],
+            action_type="pytest.pg_restore.extra",
+            resource_type="restore",
+            resource_id="pg-restore-extra",
+            request_method="POST",
+            request_path="/pytest/pg-restore",
+            status_code=200,
+            detail_summary="extra audit after backup",
+            metadata_json=None,
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    restore_run = run_restore_from_backup(
+        db,
+        org_id=org.id,
+        initiated_by_user_id=test_user["user_id"],
+        backup_file_name=backup_run.backup_file_name,
+    )
+    assert restore_run.status == "succeeded"
+    assert 'ALTER TABLE "audit_events" DISABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "lineage_events" DISABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "audit_events" ENABLE TRIGGER USER' in pg_sql
+    assert 'ALTER TABLE "lineage_events" ENABLE TRIGGER USER' in pg_sql
 
 
 def test_ops_lineage_visibility_and_immutable_tables(client, db, test_user):

@@ -4,6 +4,8 @@ import base64
 import gzip
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,23 +18,19 @@ from app.core.security import utcnow
 from app.models.base import Base
 from app.models.governance import Project
 from app.models.organization import Organization
-from app.models.operations import BackupRun, RestoreRun, RetentionPolicy, RetentionRun
+from app.models.operations import AuditEvent, BackupRun, LineageEvent, RestoreRun, RetentionPolicy, RetentionRun
 from app.models.planner import Itinerary, ItineraryDay
 from app.models.rbac import Role
 from app.models.user import User
+from app.services.resource_center import mark_orphaned_assets_cleanup_eligible, run_cleanup_eligible_assets
 
 BACKUP_FORMAT_VERSION = "trailforge-org-backup-v2"
+IMMUTABLE_EVENT_TABLES = ("audit_events", "lineage_events")
 ORG_BACKUP_EXCLUDED_TABLES = {
     "organizations",
     "permissions",
-    "users",
-    "roles",
-    "role_permissions",
-    "user_roles",
     "sessions",
     "api_tokens",
-    "audit_events",
-    "lineage_events",
 }
 
 
@@ -101,6 +99,73 @@ def _create_sqlite_immutable_triggers(db: Session) -> None:
             """
         )
     )
+    db.execute(
+        text(
+            """
+            CREATE TRIGGER trg_audit_events_immutable_delete
+            BEFORE DELETE ON audit_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table audit_events cannot be DELETE');
+            END;
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TRIGGER trg_lineage_events_immutable_update
+            BEFORE UPDATE ON lineage_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be UPDATE');
+            END;
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TRIGGER trg_lineage_events_immutable_delete
+            BEFORE DELETE ON lineage_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be DELETE');
+            END;
+            """
+        )
+    )
+
+
+def _set_postgresql_immutable_triggers_enabled(db: Session, *, table_names: tuple[str, ...], enabled: bool) -> None:
+    action = "ENABLE" if enabled else "DISABLE"
+    # USER avoids superuser-only internal trigger toggles while still suspending the immutable user triggers.
+    for table_name in table_names:
+        db.execute(text(f'ALTER TABLE "{table_name}" {action} TRIGGER USER'))
+
+
+def _immutable_event_tables(table_names: list[str] | tuple[str, ...] | set[str]) -> tuple[str, ...]:
+    table_name_set = set(table_names)
+    return tuple(name for name in IMMUTABLE_EVENT_TABLES if name in table_name_set)
+
+
+@contextmanager
+def _suspend_immutable_event_guards(db: Session, *, table_names: list[str] | tuple[str, ...] | set[str]) -> Iterator[None]:
+    immutable_table_names = _immutable_event_tables(table_names)
+    if not immutable_table_names:
+        yield
+        return
+
+    dialect_name = db.bind.dialect.name if db.bind is not None else ""
+    if dialect_name == "sqlite":
+        _drop_sqlite_immutable_triggers(db)
+    elif dialect_name == "postgresql":
+        _set_postgresql_immutable_triggers_enabled(db, table_names=immutable_table_names, enabled=False)
+
+    try:
+        yield
+    finally:
+        if dialect_name == "sqlite":
+            _create_sqlite_immutable_triggers(db)
+        elif dialect_name == "postgresql":
+            _set_postgresql_immutable_triggers_enabled(db, table_names=immutable_table_names, enabled=True)
 
 
 def _org_scope_filter_expression(table, *, org_id: str):
@@ -137,39 +202,6 @@ def _org_scope_filter_expression(table, *, org_id: str):
 
     raise OperationsValidationError(
         f"Table {table.name} has no supported org scope filter for tenant-safe backup/restore"
-    )
-    db.execute(
-        text(
-            """
-            CREATE TRIGGER trg_audit_events_immutable_delete
-            BEFORE DELETE ON audit_events
-            BEGIN
-                SELECT RAISE(FAIL, 'Immutable table audit_events cannot be DELETE');
-            END;
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TRIGGER trg_lineage_events_immutable_update
-            BEFORE UPDATE ON lineage_events
-            BEGIN
-                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be UPDATE');
-            END;
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TRIGGER trg_lineage_events_immutable_delete
-            BEFORE DELETE ON lineage_events
-            BEGIN
-                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be DELETE');
-            END;
-            """
-        )
     )
 
 
@@ -232,15 +264,7 @@ def _restore_database_snapshot(db: Session, *, payload: dict, org_id: str) -> in
 
     scoped_filters = {name: _org_scope_filter_expression(table_map[name], org_id=org_id) for name in requested_tables}
 
-    dialect_name = db.bind.dialect.name if db.bind is not None else ""
-    drop_sqlite_immutable = dialect_name == "sqlite" and bool(
-        {"audit_events", "lineage_events"}.intersection(requested_tables)
-    )
-
-    if drop_sqlite_immutable:
-        _drop_sqlite_immutable_triggers(db)
-
-    try:
+    with _suspend_immutable_event_guards(db, table_names=requested_tables):
         if requested_tables:
             for table_name in reversed(requested_tables):
                 db.execute(table_map[table_name].delete().where(scoped_filters[table_name]))
@@ -263,9 +287,6 @@ def _restore_database_snapshot(db: Session, *, payload: dict, org_id: str) -> in
             db.execute(table.insert(), decoded_rows)
             restored_table_count += 1
         return restored_table_count
-    finally:
-        if drop_sqlite_immutable:
-            _create_sqlite_immutable_triggers(db)
 
 
 def _rotation_cutoff(now: datetime) -> datetime:
@@ -521,13 +542,29 @@ def list_restore_runs(db: Session, *, org_id: str, limit: int) -> list[RestoreRu
 
 
 def get_or_create_retention_policy(db: Session, *, org_id: str, actor_user_id: str | None) -> RetentionPolicy:
+    settings = get_settings()
     policy = db.execute(select(RetentionPolicy).where(RetentionPolicy.org_id == org_id)).scalars().first()
     if policy:
+        updated = False
+        if policy.audit_retention_days != settings.audit_retention_days:
+            policy.audit_retention_days = settings.audit_retention_days
+            updated = True
+        if policy.lineage_retention_days != settings.lineage_retention_days:
+            policy.lineage_retention_days = settings.lineage_retention_days
+            updated = True
+        if updated:
+            if actor_user_id is not None:
+                policy.updated_by_user_id = actor_user_id
+            db.add(policy)
+            db.commit()
+            db.refresh(policy)
         return policy
 
     policy = RetentionPolicy(
         org_id=org_id,
-        itinerary_retention_days=get_settings().itinerary_retention_default_days,
+        itinerary_retention_days=settings.itinerary_retention_default_days,
+        audit_retention_days=settings.audit_retention_days,
+        lineage_retention_days=settings.lineage_retention_days,
         updated_by_user_id=actor_user_id,
     )
     db.add(policy)
@@ -543,8 +580,11 @@ def update_retention_policy(
     actor_user: User,
     itinerary_retention_days: int,
 ) -> RetentionPolicy:
+    settings = get_settings()
     policy = get_or_create_retention_policy(db, org_id=org_id, actor_user_id=actor_user.id)
     policy.itinerary_retention_days = itinerary_retention_days
+    policy.audit_retention_days = settings.audit_retention_days
+    policy.lineage_retention_days = settings.lineage_retention_days
     policy.updated_by_user_id = actor_user.id
     db.add(policy)
     db.commit()
@@ -556,14 +596,16 @@ def run_itinerary_retention(db: Session, *, org_id: str, actor_user_id: str | No
     started_at = utcnow()
     try:
         policy = get_or_create_retention_policy(db, org_id=org_id, actor_user_id=actor_user_id)
-        cutoff = started_at - timedelta(days=policy.itinerary_retention_days)
+        itinerary_cutoff = started_at - timedelta(days=policy.itinerary_retention_days)
+        audit_cutoff = started_at - timedelta(days=policy.audit_retention_days)
+        lineage_cutoff = started_at - timedelta(days=policy.lineage_retention_days)
 
         stale_ids = list(
             db.execute(
                 select(Itinerary.id).where(
                     Itinerary.org_id == org_id,
                     Itinerary.status == "archived",
-                    Itinerary.updated_at < cutoff,
+                    Itinerary.updated_at < itinerary_cutoff,
                 )
             )
             .scalars()
@@ -579,12 +621,42 @@ def run_itinerary_retention(db: Session, *, org_id: str, actor_user_id: str | No
             )
             deleted_count = len(stale_ids)
 
+        with _suspend_immutable_event_guards(db, table_names=IMMUTABLE_EVENT_TABLES):
+            deleted_audit_event_count = int(
+                db.execute(
+                    AuditEvent.__table__.delete().where(
+                        AuditEvent.org_id == org_id,
+                        AuditEvent.occurred_at < audit_cutoff,
+                    )
+                ).rowcount
+                or 0
+            )
+            deleted_lineage_event_count = int(
+                db.execute(
+                    LineageEvent.__table__.delete().where(
+                        LineageEvent.org_id == org_id,
+                        LineageEvent.occurred_at < lineage_cutoff,
+                    )
+                ).rowcount
+                or 0
+            )
+
         run = RetentionRun(
             org_id=org_id,
             initiated_by_user_id=actor_user_id,
             status="succeeded",
             deleted_itinerary_count=deleted_count,
-            summary=f"Applied policy={policy.itinerary_retention_days} days; cutoff={cutoff.astimezone(UTC).isoformat()}",
+            deleted_audit_event_count=deleted_audit_event_count,
+            deleted_lineage_event_count=deleted_lineage_event_count,
+            summary=(
+                "Applied retention policy "
+                f"itinerary={policy.itinerary_retention_days}d"
+                f" audit={policy.audit_retention_days}d"
+                f" lineage={policy.lineage_retention_days}d;"
+                f" itinerary_cutoff={itinerary_cutoff.astimezone(UTC).isoformat()}"
+                f" audit_cutoff={audit_cutoff.astimezone(UTC).isoformat()}"
+                f" lineage_cutoff={lineage_cutoff.astimezone(UTC).isoformat()}"
+            ),
             started_at=started_at,
             completed_at=utcnow(),
         )
@@ -599,6 +671,8 @@ def run_itinerary_retention(db: Session, *, org_id: str, actor_user_id: str | No
             initiated_by_user_id=actor_user_id,
             status="failed",
             deleted_itinerary_count=0,
+            deleted_audit_event_count=0,
+            deleted_lineage_event_count=0,
             summary=_error_summary(exc),
             started_at=started_at,
             completed_at=utcnow(),
@@ -607,6 +681,41 @@ def run_itinerary_retention(db: Session, *, org_id: str, actor_user_id: str | No
         db.commit()
         db.refresh(run)
         raise
+
+
+def run_retention_for_all_orgs(db: Session) -> int:
+    now = utcnow()
+    day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+
+    org_ids = list(db.execute(select(Organization.id).order_by(Organization.created_at.asc())).scalars().all())
+    created_count = 0
+    for org_id in org_ids:
+        already_exists = (
+            db.execute(
+                select(RetentionRun.id).where(
+                    RetentionRun.org_id == org_id,
+                    RetentionRun.status == "succeeded",
+                    RetentionRun.started_at >= day_start,
+                    RetentionRun.started_at < day_end,
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if already_exists:
+            continue
+
+        run_itinerary_retention(db, org_id=org_id, actor_user_id=None)
+        created_count += 1
+
+    return created_count
+
+
+def run_asset_cleanup_cycle(db: Session, *, max_delete: int | None = None) -> tuple[int, int]:
+    marked_orphaned_asset_count = mark_orphaned_assets_cleanup_eligible(db)
+    deleted_asset_count = run_cleanup_eligible_assets(db, max_delete=max_delete)
+    return marked_orphaned_asset_count, deleted_asset_count
 
 
 def list_retention_runs(db: Session, *, org_id: str, limit: int) -> list[RetentionRun]:

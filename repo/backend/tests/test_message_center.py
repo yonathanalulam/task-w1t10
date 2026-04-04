@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from sqlalchemy import select
+
+from app.models.organization import Organization
+from app.models.user import User
+from app.services.message_center import create_template as create_template_service
+from app.services.message_center import send_message
+from app.services.governance import create_project as create_project_service
 
 def login(client, creds: dict[str, str]) -> str:
     response = client.post(
@@ -281,3 +288,52 @@ def test_message_center_read_only_project_member_can_view_but_not_mutate(client,
         },
     )
     assert forbidden_send.status_code == 403
+
+
+def test_message_send_serializes_frequency_check_with_org_lock(db, test_user, monkeypatch):
+    user = db.execute(select(User).where(User.id == test_user["user_id"])).scalars().one()
+    org = db.execute(select(Organization).where(Organization.id == user.org_id)).scalars().one()
+    project = create_project_service(
+        db,
+        org_id=org.id,
+        name="pytest-msg-lock-project",
+        code="MSGLOCK",
+        description="lock",
+        status="active",
+    )
+    template = create_template_service(
+        db,
+        org_id=org.id,
+        project_id=project.id,
+        user=user,
+        name="pytest-msg-lock-template",
+        category="lockcheck",
+        channel="in_app",
+        body_template="Hello {{traveler_name}} at {{departure_time}}",
+        is_active=True,
+    )
+
+    original_execute = db.execute
+    saw_for_update = False
+
+    def tracked_execute(statement, *args, **kwargs):
+        nonlocal saw_for_update
+        if getattr(statement, "_for_update_arg", None) is not None and "organizations" in str(statement):
+            saw_for_update = True
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", tracked_execute)
+
+    dispatch = send_message(
+        db,
+        org_id=org.id,
+        project_id=project.id,
+        template_id=template.id,
+        recipient_user_id="traveler-lock-1",
+        itinerary_id=None,
+        variables={"traveler_name": "Ava", "departure_time": "08:30"},
+        user=user,
+    )
+
+    assert dispatch is not None
+    assert saw_for_update is True
