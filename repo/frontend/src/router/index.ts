@@ -129,6 +129,8 @@ router.beforeEach(async (to) => {
     } else {
       void authStore.bootstrap();
     }
+  } else if (authStore.isAuthenticated && authStore.isPostLoginTrusted()) {
+    void authStore.bootstrap();
   } else if (authStore.isAuthenticated) {
     await refreshAuthWithTimeout(authStore, FAST_AUTH_REFRESH_TIMEOUT_MS);
   } else if (needsAuth) {

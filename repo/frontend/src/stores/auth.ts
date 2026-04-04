@@ -16,12 +16,15 @@ type AuthResponse = {
   user: AuthUser;
 };
 
+const POST_LOGIN_GRACE_MS = 3_000;
+
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<AuthUser | null>(null);
   const loading = ref(false);
   const bootstrapping = ref(false);
   const initialized = ref(false);
   const error = ref<string | null>(null);
+  const postLoginTrustedUntil = ref<number>(0);
   let bootstrapPromise: Promise<void> | null = null;
 
   const isAuthenticated = computed(() => !!user.value);
@@ -32,6 +35,10 @@ export const useAuthStore = defineStore("auth", () => {
     () => (user.value?.roles.includes("PLANNER") ?? false) || (user.value?.roles.includes("ORG_ADMIN") ?? false)
   );
 
+  function isPostLoginTrusted(): boolean {
+    return !!user.value && Date.now() < postLoginTrustedUntil.value;
+  }
+
   async function bootstrap(): Promise<void> {
     if (!bootstrapPromise) {
       bootstrapPromise = (async () => {
@@ -40,10 +47,13 @@ export const useAuthStore = defineStore("auth", () => {
         try {
           const response = await apiGet<AuthResponse>("/api/auth/me");
           user.value = response.user;
+          postLoginTrustedUntil.value = 0;
           error.value = null;
         } catch (err) {
           if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-            user.value = null;
+            if (!isPostLoginTrusted()) {
+              user.value = null;
+            }
           }
           error.value = null;
         } finally {
@@ -70,10 +80,12 @@ export const useAuthStore = defineStore("auth", () => {
         password
       });
       user.value = response.user;
+      postLoginTrustedUntil.value = Date.now() + POST_LOGIN_GRACE_MS;
       error.value = null;
       initialized.value = true;
     } catch (err) {
       user.value = null;
+      postLoginTrustedUntil.value = 0;
       error.value = err instanceof Error ? err.message : "Login failed";
       throw err;
     } finally {
@@ -86,6 +98,7 @@ export const useAuthStore = defineStore("auth", () => {
       await apiPost<void>("/api/auth/logout", {});
     } finally {
       user.value = null;
+      postLoginTrustedUntil.value = 0;
     }
   }
 
@@ -98,16 +111,18 @@ export const useAuthStore = defineStore("auth", () => {
     user,
     loading,
     bootstrapping,
-    initialized,
-    error,
-    isAuthenticated,
-    isOrgAdmin,
-    isAuditor,
-    canAudit,
-    isPlanner,
-    bootstrap,
-    login,
-    logout,
+      initialized,
+      error,
+      postLoginTrustedUntil,
+      isAuthenticated,
+      isOrgAdmin,
+      isAuditor,
+      canAudit,
+      isPlanner,
+      isPostLoginTrusted,
+      bootstrap,
+      login,
+      logout,
     stepUp
   };
 });

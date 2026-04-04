@@ -2,12 +2,12 @@
 set -euo pipefail
 
 cleanup() {
-  docker compose down --remove-orphans
+  docker compose down -v --remove-orphans
 }
 
 trap cleanup EXIT
 
-docker compose down --remove-orphans >/dev/null 2>&1 || true
+docker compose down -v --remove-orphans >/dev/null 2>&1 || true
 
 docker compose up -d --build postgres backend frontend
 
