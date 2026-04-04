@@ -9,6 +9,7 @@ function isApiPath(responseUrl: string, expectedPath: string): boolean {
 }
 
 export async function loginToWorkspace(page: Page, creds: E2ECreds): Promise<void> {
+  page.on('response', response => console.log(`[NETWORK] ${response.status()} ${response.url()}`));
   await page.goto("/login");
   await page.getByLabel("Organization").fill(creds.orgSlug);
   await page.getByLabel("Username").fill(creds.username);
