@@ -211,7 +211,7 @@ async function run() {
 
   await humanType(page.getByTestId("dataset-name-input"), datasetName);
   await humanClick(page, page.getByTestId("dataset-save-btn"), mouseState);
-  await expect(page.getByText(datasetName)).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(datasetName)).toBeVisible();
   await sleep(900);
 
   await humanClick(page, page.locator(".list-item", { hasText: datasetName }).getByRole("button", { name: "Manage" }), mouseState);
@@ -244,7 +244,7 @@ async function run() {
   await humanType(page.getByTestId("project-name-input"), projectName);
   await humanType(page.getByTestId("project-code-input"), projectCode);
   await humanClick(page, page.getByTestId("project-save-btn"), mouseState);
-  await expect(page.locator(".list-item", { hasText: projectName })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".list-item", { hasText: projectName })).toBeVisible();
   await sleep(800);
 
   await humanClick(page, page.locator(".list-item", { hasText: projectName }).getByRole("button", { name: "Manage" }), mouseState);
@@ -253,7 +253,7 @@ async function run() {
   await page.getByTestId("project-link-dataset-select").selectOption({ label: datasetName });
   await sleep(550);
   await humanClick(page, page.getByTestId("project-link-dataset-btn"), mouseState);
-  await expect(page.locator("li.list-item strong", { hasText: datasetName })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("li.list-item strong", { hasText: datasetName })).toBeVisible();
   await sleep(800);
 
   await page.getByTestId("project-member-user-select").selectOption({ index: 1 });
@@ -264,7 +264,7 @@ async function run() {
 
   await humanType(page.getByTestId("projects-step-up-password-input"), creds.password);
   await humanClick(page, page.getByTestId("projects-step-up-btn"), mouseState);
-  await expect(page.getByText("Step-up verified for project membership changes.")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("Step-up verified for project membership changes.")).toBeVisible();
   await sleep(1500);
 
   await humanClick(page, page.getByRole("link", { name: "Planner" }), mouseState);
@@ -320,11 +320,11 @@ async function run() {
 
   await humanClick(page, page.getByRole("link", { name: "Operations" }), mouseState);
   await page.waitForURL("**/workspace/operations", { timeout: 45_000 });
-  await expect(page.getByRole("heading", { name: "Organization Operations Center" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Organization Operations Center" })).toBeVisible();
   await sleep(1200);
 
   await smoothWheel(page, 1800, 160, 100);
-  await expect(page.getByTestId("ops-audit-event-item").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("ops-audit-event-item").first()).toBeVisible();
   await sleep(1400);
   await smoothWheel(page, 1000, 150, 95);
   await sleep(1100);
