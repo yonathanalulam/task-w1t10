@@ -46,6 +46,7 @@ services:
       TF_DB_PASSWORD_FILE: /run/secrets/postgres_password
       TF_ALLOWED_ORIGINS: '["https://localhost:5173","https://frontend:5173"]'
       TF_SESSION_COOKIE_SECURE: "false"
+      CI: "true"
       TF_BOOTSTRAP_CREDS_PATH: /bootstrap/admin_credentials.txt
       TF_TOKEN_ENCRYPTION_KEY_PATH: /bootstrap/token_encryption.key
       TF_BACKUP_ENCRYPTION_KEY_PATH: /run/secrets/backup_encryption_key

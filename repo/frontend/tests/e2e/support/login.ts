@@ -29,6 +29,16 @@ export async function loginToWorkspace(page: Page, creds: E2ECreds): Promise<voi
   await page.getByRole("button", { name: "Sign in" }).click();
   const loginResponse = await loginResponsePromise;
   expect(loginResponse.status(), await loginResponse.text()).toBe(200);
+
+  const cookieDeadline = Date.now() + 10_000;
+  while (Date.now() < cookieDeadline) {
+    const cookies = await page.context().cookies();
+    if (cookies.some((cookie) => cookie.name === "trailforge_session")) {
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+
   const authMeResponse = await authMeResponsePromise;
   expect(authMeResponse.status(), await authMeResponse.text()).toBe(200);
 

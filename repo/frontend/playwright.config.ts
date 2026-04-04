@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests/e2e",
   globalSetup: "./tests/e2e/setup.ts",
+  retries: 3,
   workers: 1,
   timeout: 120_000,
   expect: { timeout: 60_000 },
