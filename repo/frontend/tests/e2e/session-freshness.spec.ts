@@ -10,7 +10,7 @@ test("route guard refreshes server session state after revocation", async ({ pag
   const { orgSlug, username, password } = creds!;
 
   await loginToWorkspace(page, { orgSlug, username, password });
-  await expect(page.getByRole("link", { name: "Planner" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("link", { name: "Planner" })).toBeVisible();
 
   const csrfCookie = (await page.context().cookies()).find((cookie) => cookie.name === "trailforge_csrf")?.value;
   expect(csrfCookie).toBeTruthy();
@@ -23,6 +23,6 @@ test("route guard refreshes server session state after revocation", async ({ pag
   expect(logoutResponse.status()).toBe(204);
 
   await page.goto("/workspace/projects");
-  await page.waitForURL("**/login", { timeout: 20_000 });
+  await page.waitForURL("**/login");
   await expect(page.getByRole("heading", { name: "TrailForge" })).toBeVisible();
 });

@@ -14,7 +14,7 @@ test("org admin can review and merge duplicate attractions", async ({ page }) =>
 
   await loginToWorkspace(page, { orgSlug, username, password });
 
-  await expect(page.getByRole("link", { name: "Datasets" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("link", { name: "Datasets" })).toBeVisible();
   await page.getByRole("link", { name: "Datasets" }).click();
   await page.getByTestId("dataset-name-input").fill(datasetName);
   await page.getByTestId("dataset-save-btn").click();
@@ -45,7 +45,7 @@ test("org admin can review and merge duplicate attractions", async ({ page }) =>
     await page.getByTestId("attraction-save-btn").click();
 
     await expect(page.locator(".error-banner")).toHaveCount(0);
-    await expect(page.getByTestId("attraction-list-item")).toHaveCount(expectedCount, { timeout: 20_000 });
+    await expect(page.getByTestId("attraction-list-item")).toHaveCount(expectedCount);
   };
 
   await createAttractionViaUi({
@@ -66,7 +66,7 @@ test("org admin can review and merge duplicate attractions", async ({ page }) =>
     duration: "80"
   }, 2);
 
-  await expect(page.getByTestId("duplicate-group")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("duplicate-group")).toBeVisible();
   await page.getByTestId("duplicate-target-select-0").selectOption({ index: 0 });
   await page.getByTestId("duplicate-source-select-0").selectOption({ index: 1 });
   await page.getByTestId("duplicate-merge-btn-0").click();

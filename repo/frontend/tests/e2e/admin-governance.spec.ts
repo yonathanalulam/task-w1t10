@@ -16,7 +16,7 @@ test("org admin can manage datasets and projects governance", async ({ page }) =
 
   await loginToWorkspace(page, { orgSlug, username, password });
 
-  await expect(page.getByRole("link", { name: "Datasets" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("link", { name: "Datasets" })).toBeVisible();
   await page.getByRole("link", { name: "Datasets" }).click();
   await page.getByTestId("dataset-name-input").fill(datasetName);
   await page.getByTestId("dataset-save-btn").click();

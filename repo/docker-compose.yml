@@ -169,6 +169,8 @@ services:
     volumes:
       - trailforge_certs:/certs:ro
       - trailforge_bootstrap:/bootstrap:ro
+      - ./frontend/test-results:/app/frontend/test-results
+      - ./frontend/playwright-report:/app/frontend/playwright-report
     command: ["bash", "-lc", "bash ./scripts/run_e2e_with_bootstrap.sh"]
 
 volumes:
