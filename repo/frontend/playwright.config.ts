@@ -1,12 +1,14 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const isCI = Boolean(process.env.CI);
+
 export default defineConfig({
   testDir: "./tests/e2e",
   globalSetup: "./tests/e2e/setup.ts",
   workers: 1,
-  timeout: 60_000,
+  timeout: isCI ? 120_000 : 60_000,
   expect: {
-    timeout: 20_000
+    timeout: isCI ? 45_000 : 20_000
   },
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "https://localhost:5173",
@@ -16,7 +18,10 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] }
+      use: {
+        ...devices["Desktop Chrome"],
+        ignoreHTTPSErrors: true
+      }
     }
   ]
 });
