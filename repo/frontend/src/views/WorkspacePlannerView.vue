@@ -952,7 +952,7 @@ onMounted(loadProjects);
                 ref="attractionAssetInputRef"
                 data-testid="planner-resource-attraction-file-input"
                 type="file"
-                accept=".pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png"
+                accept=".pdf,.docx,.xlsx,.csv,.jpg,.png"
                 :disabled="!canEditSelectedProject || resourceCenterLocked || uploadingAttractionAsset"
                 @input="onAttractionAssetFileChange"
                 @change="onAttractionAssetFileChange"
@@ -972,7 +972,7 @@ onMounted(loadProjects);
             <p v-if="lastAttractionUploadValidation" class="muted-inline" data-testid="planner-resource-attraction-validation">
               Server validation: detected={{ lastAttractionUploadValidation.detected_mime_type }} •
               size={{ formatBytes(Number(lastAttractionUploadValidation.size_bytes)) }} •
-              signature={{ lastAttractionUploadValidation.signature_valid ? 'ok' : 'invalid' }}
+              checksum={{ lastAttractionUploadValidation.checksum }}
             </p>
 
             <p v-if="loadingResourceAssets">Loading assets...</p>
@@ -1017,7 +1017,7 @@ onMounted(loadProjects);
                 ref="itineraryAssetInputRef"
                 data-testid="planner-resource-itinerary-file-input"
                 type="file"
-                accept=".pdf,.docx,.xlsx,.csv,.jpg,.jpeg,.png"
+                accept=".pdf,.docx,.xlsx,.csv,.jpg,.png"
                 :disabled="!canEditSelectedProject || resourceCenterLocked || uploadingItineraryAsset"
                 @input="onItineraryAssetFileChange"
                 @change="onItineraryAssetFileChange"
@@ -1037,7 +1037,7 @@ onMounted(loadProjects);
             <p v-if="lastItineraryUploadValidation" class="muted-inline" data-testid="planner-resource-itinerary-validation">
               Server validation: detected={{ lastItineraryUploadValidation.detected_mime_type }} •
               size={{ formatBytes(Number(lastItineraryUploadValidation.size_bytes)) }} •
-              signature={{ lastItineraryUploadValidation.signature_valid ? 'ok' : 'invalid' }}
+              checksum={{ lastItineraryUploadValidation.checksum }}
             </p>
 
             <ul v-if="itineraryAssets.length" class="resource-asset-grid">

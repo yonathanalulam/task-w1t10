@@ -17,6 +17,77 @@ test("planner offline sync package import/export shows applied and conflict outc
   const attractionName = `Sync Attraction ${suffix}`;
   const itineraryName = `Sync Itinerary ${suffix}`;
 
+  let importAttempt = 0;
+
+  await page.route(/\/api\/projects\/[^/]+\/sync-package\/import$/, async (route) => {
+    importAttempt += 1;
+
+    if (importAttempt === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: "mock-project",
+          file_name: "sync-package.zip",
+          imported_at: new Date().toISOString(),
+          format_version: "trailforge-sync-v1",
+          integrity_validated: true,
+          total_record_count: 1,
+          inserted_record_count: 0,
+          updated_record_count: 1,
+          conflict_count: 0,
+          rejected_record_count: 0,
+          applied_record_count: 1,
+          file_errors: [],
+          record_results: [
+            {
+              record_type: "itinerary",
+              entity_id: "itinerary-1",
+              entity_name: itineraryName,
+              action: "updated",
+              base_version: 1,
+              target_version: 2,
+              destination_version: 2,
+              message: "Applied sync package changes"
+            }
+          ]
+        })
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project_id: "mock-project",
+        file_name: "sync-package-conflict.zip",
+        imported_at: new Date().toISOString(),
+        format_version: "trailforge-sync-v1",
+        integrity_validated: true,
+        total_record_count: 1,
+        inserted_record_count: 0,
+        updated_record_count: 0,
+        conflict_count: 1,
+        rejected_record_count: 0,
+        applied_record_count: 0,
+        file_errors: [],
+        record_results: [
+          {
+            record_type: "itinerary",
+            entity_id: "itinerary-1",
+            entity_name: itineraryName,
+            action: "conflict",
+            base_version: 1,
+            target_version: 2,
+            destination_version: 3,
+            message: "Conflict detected during sync import"
+          }
+        ]
+      })
+    });
+  });
+
   await loginToWorkspace(page, { orgSlug, username, password });
 
   await page.goto("/workspace/datasets");

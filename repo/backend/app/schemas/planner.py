@@ -212,4 +212,5 @@ class SyncPackageImportReceiptOut(BaseModel):
     rejected_record_count: int
     applied_record_count: int
     file_errors: list[str]
+    correction_hints: list[str]
     record_results: list[SyncPackageRecordResultOut]

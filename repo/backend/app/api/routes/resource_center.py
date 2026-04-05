@@ -13,6 +13,7 @@ from app.services.resource_center import (
     list_attraction_assets,
     list_itinerary_assets,
     open_asset_stream,
+    sanitize_filename,
     unreference_asset,
     upload_attraction_asset,
     upload_itinerary_asset,
@@ -115,7 +116,6 @@ def attraction_assets_upload(
             "detected_mime_type": asset.detected_mime_type,
             "size_bytes": asset.file_size_bytes,
             "checksum": asset.sha256_checksum,
-            "signature_valid": True,
         },
     )
 
@@ -191,7 +191,6 @@ def itinerary_assets_upload(
             "detected_mime_type": asset.detected_mime_type,
             "size_bytes": asset.file_size_bytes,
             "checksum": asset.sha256_checksum,
-            "signature_valid": True,
         },
     )
 
@@ -219,7 +218,8 @@ def resource_asset_download(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     disposition = "inline" if asset.preview_kind == "image" else "attachment"
-    headers = {"Content-Disposition": f'{disposition}; filename="{asset.original_file_name}"'}
+    download_name = sanitize_filename(asset.original_file_name, default=f"asset.{asset.file_extension}")
+    headers = {"Content-Disposition": f'{disposition}; filename="{download_name}"'}
     return StreamingResponse(
         stream,
         media_type=asset.detected_mime_type,

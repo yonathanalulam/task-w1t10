@@ -45,12 +45,12 @@ test("planner resource center uploads scoped assets with validation feedback", a
 
   await page.getByTestId("planner-resource-attraction-select").selectOption({ label: `${attractionName} (${datasetName})` });
   await page.getByTestId("planner-resource-attraction-file-input").setInputFiles({
-    name: "map.png",
-    mimeType: "image/png",
-    buffer: Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("e2e")])
+    name: "catalog.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("name,city\nExample,Austin\n")
   });
   await page.getByTestId("planner-resource-attraction-upload-btn").click();
-  await expect(page.getByTestId("planner-resource-attraction-validation")).toContainText("signature=ok");
+  await expect(page.getByTestId("planner-resource-attraction-validation")).toContainText("detected=text/csv");
   await expect(page.getByTestId("planner-resource-attraction-asset")).toHaveCount(1);
 
   await page.getByTestId("planner-resource-itinerary-file-input").setInputFiles({

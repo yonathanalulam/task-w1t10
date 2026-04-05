@@ -42,7 +42,8 @@ os.environ.setdefault("TF_BACKUP_ENCRYPTION_KEY_PATH", str(TEST_BACKUP_KEY_PATH)
 os.environ.setdefault("TF_BOOTSTRAP_CREDS_PATH", str(TEST_BOOTSTRAP_CREDS_PATH))
 os.environ.setdefault("TF_TOKEN_ENCRYPTION_KEY_PATH", str(TEST_TOKEN_KEY_PATH))
 
-from app.core.config import clear_settings_cache, get_settings
+from app.core.config import get_settings
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.main import app
@@ -52,17 +53,17 @@ from app.models.message_center import MessageDeliveryAttempt, MessageDispatch, M
 from app.models.operations import AuditEvent, BackupRun, LineageEvent, RestoreRun, RetentionPolicy, RetentionRun
 from app.models.organization import Organization
 from app.models.planner import Itinerary, ItineraryDay, ItineraryStop, ItineraryVersion
-from app.models.rbac import Role, UserRole
+from app.models.rbac import Permission, Role, RolePermission, UserRole
 from app.models.user import User
-from app.services.bootstrap import ensure_bootstrap_state
+from app.services.bootstrap import ROLE_MAP, ensure_bootstrap_state
+
+settings.TF_SESSION_COOKIE_SECURE = False
 
 
 @pytest.fixture(scope="session", autouse=True)
 def test_settings() -> Generator[None, None, None]:
-    os.environ["TF_SESSION_COOKIE_SECURE"] = "false"
-    clear_settings_cache()
-
     settings = get_settings()
+
     if settings.resolved_database_url().startswith("sqlite"):
         TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         alembic_cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
@@ -164,7 +165,7 @@ def clean_test_users(db: Session) -> Generator[None, None, None]:
 
 @pytest.fixture()
 def client() -> Generator[TestClient, None, None]:
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
 
 
@@ -182,6 +183,24 @@ def _create_user(db: Session, *, org: Organization, username: str, password: str
     db.add(UserRole(user_id=user.id, role_id=role.id))
     db.commit()
     return user
+
+
+def _seed_role_permissions(db: Session, *, org: Organization) -> None:
+    permission_codes = sorted({code for codes in ROLE_MAP.values() for code in codes})
+    permissions = {
+        permission.code: permission
+        for permission in db.query(Permission).filter(Permission.code.in_(permission_codes)).all()
+    }
+    for role in db.query(Role).filter_by(org_id=org.id).all():
+        existing_permission_ids = {
+            row.permission_id for row in db.query(RolePermission).filter_by(role_id=role.id).all()
+        }
+        for code in ROLE_MAP.get(role.name, []):
+            permission = permissions[code]
+            if permission.id in existing_permission_ids:
+                continue
+            db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+    db.commit()
 
 
 @pytest.fixture()
@@ -249,6 +268,7 @@ def other_org_admin(db: Session) -> dict[str, str]:
     for role_name in ("ORG_ADMIN", "PLANNER", "AUDITOR"):
         db.add(Role(org_id=org.id, name=role_name))
     db.commit()
+    _seed_role_permissions(db, org=org)
 
     user = _create_user(
         db,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
@@ -9,19 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 
-if TYPE_CHECKING:
-    from app.models.governance import Dataset, Project
-    from app.models.planner import Itinerary
-    from app.models.user import User
-
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     action_type: Mapped[str] = mapped_column(String(120), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(120), nullable=False)
     resource_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
@@ -32,29 +26,21 @@ class AuditEvent(Base):
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    project: Mapped["Project | None"] = relationship()
-    actor_user: Mapped["User | None"] = relationship()
-
 
 class LineageEvent(Base):
     __tablename__ = "lineage_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
-    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    dataset_id: Mapped[str | None] = mapped_column(ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True)
-    itinerary_id: Mapped[str | None] = mapped_column(ForeignKey("itineraries.id", ondelete="SET NULL"), nullable=True)
-    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    dataset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    itinerary_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(120), nullable=False)
     entity_id: Mapped[str | None] = mapped_column(String(180), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    project: Mapped["Project | None"] = relationship()
-    dataset: Mapped["Dataset | None"] = relationship()
-    itinerary: Mapped["Itinerary | None"] = relationship()
-    created_by_user: Mapped["User | None"] = relationship()
 
 
 class RetentionPolicy(Base, TimestampMixin):

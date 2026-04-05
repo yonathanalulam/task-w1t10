@@ -28,7 +28,6 @@ export type ResourceAssetUploadResult = {
     detected_mime_type: string;
     size_bytes: number;
     checksum: string;
-    signature_valid: boolean;
   };
 };
 

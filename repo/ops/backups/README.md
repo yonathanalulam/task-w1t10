@@ -52,7 +52,8 @@ The helper is optional and useful for manual/operator-triggered cycles.
 3. Select a backup file from recorded backup runs
 4. Click **Run restore**
 
-Restore is destructive to the current organization's runtime state and replays that organization's encrypted snapshot.
+Restore is destructive to the current organization's mutable runtime state and replays that organization's encrypted snapshot.
+Existing immutable `audit_events` and `lineage_events` are preserved and restore only appends missing historical rows from the backup.
 
 ## Failure visibility
 

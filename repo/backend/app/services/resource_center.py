@@ -3,9 +3,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import unquote
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -18,15 +20,15 @@ from app.models.governance import Attraction, Project, ProjectDataset, ProjectMe
 from app.models.planner import Itinerary
 from app.models.resource_center import ResourceAsset
 from app.models.user import User
+from app.services.authorization import user_has_any_permission
 from app.services.object_storage import LocalDiskObjectStorage, ObjectStorageError
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "xlsx", "csv", "jpg", "jpeg", "png"}
-IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
+ALLOWED_EXTENSIONS = {"csv", "docx", "jpg", "pdf", "png", "xlsx"}
+IMAGE_EXTENSIONS = {"jpg", "png"}
 EXTENSION_MIME_EXPECTATIONS = {
-    "pdf": {"application/pdf"},
     "jpg": {"image/jpeg"},
-    "jpeg": {"image/jpeg"},
     "png": {"image/png"},
+    "pdf": {"application/pdf"},
     "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
     "csv": {"text/csv"},
@@ -34,11 +36,11 @@ EXTENSION_MIME_EXPECTATIONS = {
 
 
 class ResourceCenterValidationError(Exception):
-    """Raised when uploaded media fails controlled validation."""
+    pass
 
 
 class ResourceCenterAuthorizationError(Exception):
-    """Raised when caller lacks required project/scope access."""
+    pass
 
 
 @dataclass(slots=True)
@@ -53,12 +55,8 @@ class ValidatedUpload:
     sha256_checksum: str
 
 
-def _role_names(user: User) -> set[str]:
-    return {user_role.role.name for user_role in user.user_roles}
-
-
-def _is_org_admin(user: User) -> bool:
-    return "ORG_ADMIN" in _role_names(user)
+def _is_org_admin(db: Session, user: User) -> bool:
+    return user_has_any_permission(db, user_id=user.id, required_permissions=("org.manage",))
 
 
 def _project_membership(db: Session, *, project_id: str, user_id: str) -> ProjectMember | None:
@@ -81,7 +79,7 @@ def _project_for_user(
     if not project:
         return None
 
-    if _is_org_admin(user):
+    if _is_org_admin(db, user):
         return project
 
     membership = _project_membership(db, project_id=project_id, user_id=user.id)
@@ -138,7 +136,7 @@ def _resolve_itinerary_scope(
     if not itinerary:
         return None
 
-    if require_edit and itinerary.assigned_planner_user_id and itinerary.assigned_planner_user_id != user.id and not _is_org_admin(user):
+    if require_edit and itinerary.assigned_planner_user_id and itinerary.assigned_planner_user_id != user.id and not _is_org_admin(db, user):
         raise ResourceCenterAuthorizationError("Itinerary is assigned to another planner")
     return itinerary
 
@@ -160,6 +158,13 @@ def _extension_from_filename(file_name: str) -> str:
     if len(parts) != 2:
         return ""
     return parts[1].strip().lower()
+
+
+def sanitize_filename(value: str, *, default: str = "download") -> str:
+    normalized = unquote(value).replace("\\", "/").split("/")[-1]
+    normalized = re.sub(r"[\x00-\x1f\x7f\"']", "", normalized)
+    normalized = normalized.strip().strip(".")
+    return normalized or default
 
 
 def _detect_zip_family_mime(payload: bytes) -> str | None:
@@ -219,7 +224,7 @@ def _detect_mime(payload: bytes) -> str | None:
 
 def _validate_upload(upload_file: UploadFile) -> ValidatedUpload:
     settings = get_settings()
-    original_name = upload_file.filename or "unnamed"
+    original_name = sanitize_filename(upload_file.filename or "unnamed", default="unnamed")
     extension = _extension_from_filename(original_name)
     if extension not in ALLOWED_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
@@ -261,7 +266,7 @@ def _next_storage_key(*, org_id: str, project_id: str, scope_type: str, extensio
 
 
 def _enqueue_scan_hook(_: ResourceAsset) -> None:
-    """Hook point for future malware scanner queueing/integration."""
+    return None
 
 
 def list_attraction_assets(

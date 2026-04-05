@@ -205,6 +205,38 @@ def _org_scope_filter_expression(table, *, org_id: str):
     )
 
 
+def _normalized_row_for_compare(table, row: dict) -> dict:
+    return {column.name: _serialize_value(row.get(column.name)) for column in table.columns}
+
+
+def _restore_immutable_rows(db: Session, *, table, rows: list[dict], org_scope_filter) -> None:
+    if not rows:
+        return
+    if "id" not in table.c:
+        raise OperationsValidationError(f"Immutable table {table.name} must expose an id column for restore")
+
+    requested_ids = [row["id"] for row in rows if row.get("id") is not None]
+    existing_rows_by_id = {
+        row["id"]: dict(row)
+        for row in db.execute(select(table).where(org_scope_filter, table.c.id.in_(requested_ids))).mappings().all()
+    }
+
+    rows_to_insert = []
+    for row in rows:
+        row_id = row.get("id")
+        existing = existing_rows_by_id.get(row_id)
+        if existing is None:
+            rows_to_insert.append(row)
+            continue
+        if _normalized_row_for_compare(table, existing) != _normalized_row_for_compare(table, row):
+            raise OperationsValidationError(
+                f"Immutable table {table.name} contains conflicting history for row id {row_id}"
+            )
+
+    if rows_to_insert:
+        db.execute(table.insert(), rows_to_insert)
+
+
 def _serialize_database_snapshot(db: Session, *, org_id: str) -> dict:
     table_payload = []
     for table in Base.metadata.sorted_tables:
@@ -263,30 +295,34 @@ def _restore_database_snapshot(db: Session, *, payload: dict, org_id: str) -> in
         raise OperationsValidationError(f"Backup references unknown tables: {', '.join(missing_tables)}")
 
     scoped_filters = {name: _org_scope_filter_expression(table_map[name], org_id=org_id) for name in requested_tables}
+    immutable_tables = set(_immutable_event_tables(requested_tables))
+    mutable_tables = [name for name in requested_tables if name not in immutable_tables]
 
-    with _suspend_immutable_event_guards(db, table_names=requested_tables):
-        if requested_tables:
-            for table_name in reversed(requested_tables):
-                db.execute(table_map[table_name].delete().where(scoped_filters[table_name]))
+    for table_name in reversed(mutable_tables):
+        db.execute(table_map[table_name].delete().where(scoped_filters[table_name]))
 
-        restored_table_count = 0
-        for table_blob in payload.get("tables", []):
-            table = table_map[table_blob["table_name"]]
-            rows = table_blob.get("rows", [])
-            if not rows:
-                restored_table_count += 1
-                continue
-
-            decoded_rows = []
-            for row in rows:
-                decoded_row = {}
-                for column in table.columns:
-                    decoded_row[column.name] = _deserialize_value(row.get(column.name), column_type=column.type)
-                decoded_rows.append(decoded_row)
-
-            db.execute(table.insert(), decoded_rows)
+    restored_table_count = 0
+    for table_blob in payload.get("tables", []):
+        table_name = table_blob["table_name"]
+        table = table_map[table_name]
+        rows = table_blob.get("rows", [])
+        if not rows:
             restored_table_count += 1
-        return restored_table_count
+            continue
+
+        decoded_rows = []
+        for row in rows:
+            decoded_row = {}
+            for column in table.columns:
+                decoded_row[column.name] = _deserialize_value(row.get(column.name), column_type=column.type)
+            decoded_rows.append(decoded_row)
+
+        if table_name in immutable_tables:
+            _restore_immutable_rows(db, table=table, rows=decoded_rows, org_scope_filter=scoped_filters[table_name])
+        else:
+            db.execute(table.insert(), decoded_rows)
+        restored_table_count += 1
+    return restored_table_count
 
 
 def _rotation_cutoff(now: datetime) -> datetime:

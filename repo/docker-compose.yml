@@ -45,7 +45,7 @@ services:
       TF_DB_USER: trailforge
       TF_DB_PASSWORD_FILE: /run/secrets/postgres_password
       TF_ALLOWED_ORIGINS: '["https://localhost:5173","https://frontend:5173"]'
-      TF_SESSION_COOKIE_SECURE: "false"
+      TF_SESSION_COOKIE_SECURE: "${TF_SESSION_COOKIE_SECURE:-true}"
       CI: "true"
       TF_BOOTSTRAP_CREDS_PATH: /bootstrap/admin_credentials.txt
       TF_TOKEN_ENCRYPTION_KEY_PATH: /bootstrap/token_encryption.key

@@ -42,7 +42,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(db_de
         key=settings.session_cookie_name,
         value=raw_session_token,
         httponly=True,
-        secure=settings.session_cookie_secure,
+        secure=settings.TF_SESSION_COOKIE_SECURE,
         samesite="strict",
         max_age=settings.session_ttl_hours * 3600,
         path="/",
@@ -51,7 +51,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(db_de
         key=settings.csrf_cookie_name,
         value=raw_csrf_token,
         httponly=False,
-        secure=settings.session_cookie_secure,
+        secure=settings.TF_SESSION_COOKIE_SECURE,
         samesite="strict",
         max_age=settings.session_ttl_hours * 3600,
         path="/",
@@ -68,8 +68,16 @@ def logout(
 ) -> None:
     revoke_session(db, auth_session)
     settings = get_settings()
-    response.delete_cookie(key=settings.session_cookie_name, path="/")
-    response.delete_cookie(key=settings.csrf_cookie_name, path="/")
+    response.delete_cookie(
+        key=settings.session_cookie_name,
+        path="/",
+        secure=settings.TF_SESSION_COOKIE_SECURE,
+    )
+    response.delete_cookie(
+        key=settings.csrf_cookie_name,
+        path="/",
+        secure=settings.TF_SESSION_COOKIE_SECURE,
+    )
 
 
 @router.get("/me", response_model=AuthResponse)

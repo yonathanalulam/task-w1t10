@@ -158,6 +158,7 @@ export type SyncPackageImportReceipt = {
   rejected_record_count: number;
   applied_record_count: number;
   file_errors: string[];
+  correction_hints: string[];
   record_results: SyncPackageRecordResult[];
 };
 

@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 import { resolveE2ECreds } from "./support/credentials";
 import { loginToWorkspace } from "./support/login";
 
+function isApiPath(responseUrl: string, expectedPath: string): boolean {
+  return new URL(responseUrl).pathname === expectedPath;
+}
+
 test("org admin can manage datasets and projects governance", async ({ page }) => {
   const creds = resolveE2ECreds();
   if (!creds) {
@@ -64,15 +68,33 @@ test("org admin can use operations center retention and backup visibility", asyn
   await page.getByTestId("ops-retention-save-btn").click();
   await expect(page.getByText("Retention policy updated.")).toBeVisible();
 
+  const backupResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && isApiPath(response.url(), "/api/ops/backups/run") && response.status() === 200
+  );
   await page.getByTestId("ops-backup-run-btn").click();
-  await expect(page.getByTestId("ops-backup-run-item").first()).toContainText("trailforge-");
+  const backupResponse = await backupResponsePromise;
+  const backupPayload = await backupResponse.json();
+  const backupFileName = String(backupPayload.backup_file_name ?? "");
+  expect(backupFileName).toContain("trailforge-");
+  await expect(page.getByTestId("ops-backup-run-item").filter({ hasText: backupFileName }).first()).toBeVisible();
 
   const restoreSelect = page.getByTestId("ops-restore-file-select");
   await expect(restoreSelect).toBeVisible();
-  await expect(restoreSelect.locator("option")).toHaveCount(2);
-  await restoreSelect.selectOption({ index: 1 });
-  await page.getByTestId("ops-restore-run-btn").click();
-  await expect(page.getByTestId("ops-restore-run-item").first()).toContainText("succeeded");
+  await expect(restoreSelect.locator(`option[value="${backupFileName}"]`)).toHaveCount(1);
+  await restoreSelect.selectOption(backupFileName);
 
-  await expect(page.getByTestId("ops-audit-event-item").first()).toContainText("operations.");
+  const restoreResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && isApiPath(response.url(), "/api/ops/restore") && response.status() === 200
+  );
+  await page.getByTestId("ops-restore-run-btn").click();
+  const restoreResponse = await restoreResponsePromise;
+  const restorePayload = await restoreResponse.json();
+  expect(restorePayload.status).toBe("succeeded");
+  await loginToWorkspace(page, { orgSlug, username, password });
+  await page.goto("/workspace/operations");
+  await expect(page.getByTestId("ops-restore-run-item").filter({ hasText: backupFileName }).first()).toContainText("succeeded");
+
+  await expect(page.getByTestId("ops-audit-event-item").filter({ hasText: "operations." }).first()).toBeVisible();
 });

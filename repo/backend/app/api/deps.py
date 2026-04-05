@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.core.security import hash_token
 from app.models.auth import Session as AuthSession
 from app.models.user import User
+from app.services.authorization import user_has_any_permission
 from app.services.auth import get_active_api_token, get_active_session, has_recent_step_up
 
 
@@ -51,15 +52,17 @@ def require_recent_step_up(auth_session: AuthSession = Depends(current_session_d
     return auth_session
 
 
-def _ensure_roles(auth_session: AuthSession, *required_roles: str) -> AuthSession:
-    user_roles = {user_role.role.name for user_role in auth_session.user.user_roles}
-    if not any(role in user_roles for role in required_roles):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+def _ensure_permissions(db: Session, auth_session: AuthSession, *required_permissions: str) -> AuthSession:
+    if not user_has_any_permission(db, user_id=auth_session.user_id, required_permissions=required_permissions):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission")
     return auth_session
 
 
-def org_admin_session_dep(auth_session: AuthSession = Depends(current_session_dep)) -> AuthSession:
-    return _ensure_roles(auth_session, "ORG_ADMIN")
+def org_admin_session_dep(
+    auth_session: AuthSession = Depends(current_session_dep),
+    db: Session = Depends(db_dep),
+) -> AuthSession:
+    return _ensure_permissions(db, auth_session, "org.manage")
 
 
 def csrf_protected_session_dep(
@@ -83,20 +86,32 @@ def csrf_protected_session_dep(
     return auth_session
 
 
-def org_admin_csrf_session_dep(auth_session: AuthSession = Depends(csrf_protected_session_dep)) -> AuthSession:
-    return _ensure_roles(auth_session, "ORG_ADMIN")
+def org_admin_csrf_session_dep(
+    auth_session: AuthSession = Depends(csrf_protected_session_dep),
+    db: Session = Depends(db_dep),
+) -> AuthSession:
+    return _ensure_permissions(db, auth_session, "org.manage")
 
 
-def auditor_session_dep(auth_session: AuthSession = Depends(current_session_dep)) -> AuthSession:
-    return _ensure_roles(auth_session, "ORG_ADMIN", "AUDITOR")
+def auditor_session_dep(
+    auth_session: AuthSession = Depends(current_session_dep),
+    db: Session = Depends(db_dep),
+) -> AuthSession:
+    return _ensure_permissions(db, auth_session, "org.manage", "audit.read")
 
 
-def planner_session_dep(auth_session: AuthSession = Depends(current_session_dep)) -> AuthSession:
-    return _ensure_roles(auth_session, "ORG_ADMIN", "PLANNER")
+def planner_session_dep(
+    auth_session: AuthSession = Depends(current_session_dep),
+    db: Session = Depends(db_dep),
+) -> AuthSession:
+    return _ensure_permissions(db, auth_session, "org.manage", "itinerary.write")
 
 
-def planner_csrf_session_dep(auth_session: AuthSession = Depends(csrf_protected_session_dep)) -> AuthSession:
-    return _ensure_roles(auth_session, "ORG_ADMIN", "PLANNER")
+def planner_csrf_session_dep(
+    auth_session: AuthSession = Depends(csrf_protected_session_dep),
+    db: Session = Depends(db_dep),
+) -> AuthSession:
+    return _ensure_permissions(db, auth_session, "org.manage", "itinerary.write")
 
 
 @dataclass(slots=True)
@@ -105,10 +120,9 @@ class PlannerActor:
     auth_mode: str
 
 
-def _ensure_user_roles(user: User, *required_roles: str) -> None:
-    user_roles = {user_role.role.name for user_role in user.user_roles}
-    if not any(role in user_roles for role in required_roles):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+def _ensure_user_permissions(db: Session, user: User, *required_permissions: str) -> None:
+    if not user_has_any_permission(db, user_id=user.id, required_permissions=required_permissions):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission")
 
 
 def planner_sync_actor_dep(
@@ -127,7 +141,7 @@ def planner_sync_actor_dep(
         if not api_token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
 
-        _ensure_user_roles(api_token.user, "ORG_ADMIN", "PLANNER")
+        _ensure_user_permissions(db, api_token.user, "org.manage", "itinerary.write")
         return PlannerActor(user=api_token.user, auth_mode="api_token")
 
     if not session_cookie:
@@ -137,7 +151,7 @@ def planner_sync_actor_dep(
     if not auth_session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
 
-    _ensure_user_roles(auth_session.user, "ORG_ADMIN", "PLANNER")
+    _ensure_user_permissions(db, auth_session.user, "org.manage", "itinerary.write")
 
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         csrf_header = request.headers.get(get_settings().csrf_header_name)

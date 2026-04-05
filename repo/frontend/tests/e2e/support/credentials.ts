@@ -1,6 +1,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type E2ECreds = {
   orgSlug: string;
@@ -9,6 +10,7 @@ export type E2ECreds = {
 };
 
 let cachedCreds: E2ECreds | null | undefined;
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
 function parseCredsText(raw: string): E2ECreds | null {
   const parsed = Object.fromEntries(
@@ -37,7 +39,7 @@ function readCredsFile(filePath: string): E2ECreds | null {
     return null;
   }
   try {
-    const helperPath = path.resolve(__dirname, "../../../scripts/read_bootstrap_credentials.mjs");
+    const helperPath = path.resolve(currentDir, "../../../scripts/read_bootstrap_credentials.mjs");
     return parseCredsText(execFileSync("node", [helperPath, filePath], { encoding: "utf-8" }));
   } catch {
     return null;
@@ -45,7 +47,7 @@ function readCredsFile(filePath: string): E2ECreds | null {
 }
 
 function readFromDockerCompose(): E2ECreds | null {
-  const repoRoot = path.resolve(__dirname, "../../../..");
+  const repoRoot = path.resolve(currentDir, "../../../..");
   try {
     const output = execSync("docker compose exec -T backend python scripts/read_bootstrap_credentials.py", {
       cwd: repoRoot,

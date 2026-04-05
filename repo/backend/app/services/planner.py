@@ -14,17 +14,19 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.models.governance import Attraction, Dataset, Project, ProjectDataset, ProjectMember
 from app.models.organization import Organization
 from app.models.planner import Itinerary, ItineraryDay, ItineraryStop, ItineraryVersion
 from app.models.rbac import UserRole
 from app.models.user import User
+from app.services.authorization import user_has_any_permission
 
 try:
     from openpyxl import Workbook, load_workbook
-except ImportError:  # pragma: no cover - runtime dependency is expected in app image
-    Workbook = None  # type: ignore[assignment]
-    load_workbook = None  # type: ignore[assignment]
+except ImportError:
+    Workbook = None
+    load_workbook = None
 
 EARTH_RADIUS_MILES = 3958.8
 URBAN_DISTANCE_PORTION_MILES = 10.0
@@ -53,27 +55,27 @@ SYNC_ASSETS_PATH = "assets/attractions.json"
 
 
 class PlannerConflictError(Exception):
-    """Raised on uniqueness and ordering conflicts."""
+    pass
 
 
 class PlannerValidationError(Exception):
-    """Raised for semantically invalid planner requests."""
+    pass
 
 
 class PlannerAuthorizationError(Exception):
-    """Raised when an authenticated user lacks planner write authority."""
+    pass
 
 
-def _role_names(user: User) -> set[str]:
-    return {user_role.role.name for user_role in user.user_roles}
+class PlannerPayloadTooLargeError(Exception):
+    pass
 
 
-def _is_org_admin(user: User) -> bool:
-    return "ORG_ADMIN" in _role_names(user)
+def _is_org_admin(db: Session, user: User) -> bool:
+    return user_has_any_permission(db, user_id=user.id, required_permissions=("org.manage",))
 
 
-def _is_planner(user: User) -> bool:
-    return "PLANNER" in _role_names(user)
+def _is_planner(db: Session, user: User) -> bool:
+    return user_has_any_permission(db, user_id=user.id, required_permissions=("itinerary.write",))
 
 
 def _project_membership(db: Session, *, project_id: str, user_id: str) -> ProjectMember | None:
@@ -96,7 +98,7 @@ def _project_for_user(
     if not project:
         return None
 
-    if _is_org_admin(user):
+    if _is_org_admin(db, user):
         return project
 
     membership = _project_membership(db, project_id=project_id, user_id=user.id)
@@ -110,7 +112,7 @@ def _project_for_user(
 
 
 def list_planner_projects(db: Session, *, org_id: str, user: User) -> list[tuple[Project, bool]]:
-    if _is_org_admin(user):
+    if _is_org_admin(db, user):
         projects = list(
             db.execute(select(Project).where(Project.org_id == org_id).order_by(Project.name.asc())).scalars().all()
         )
@@ -131,7 +133,7 @@ def list_planner_projects(db: Session, *, org_id: str, user: User) -> list[tuple
 
 
 def list_assignable_planners(db: Session, *, org_id: str, user: User) -> list[User]:
-    if _is_org_admin(user):
+    if _is_org_admin(db, user):
         users = list(
             db.execute(
                 select(User)
@@ -142,9 +144,9 @@ def list_assignable_planners(db: Session, *, org_id: str, user: User) -> list[Us
             .scalars()
             .all()
         )
-        return [candidate for candidate in users if _is_planner(candidate)]
+        return [candidate for candidate in users if _is_planner(db, candidate)]
 
-    return [user] if _is_planner(user) else []
+    return [user] if _is_planner(db, user) else []
 
 
 def list_project_catalog_attractions(
@@ -218,14 +220,14 @@ def _validate_assigned_planner(
     )
     if not assigned:
         raise PlannerValidationError("Assigned planner user was not found in this organization")
-    if not _is_planner(assigned):
+    if not _is_planner(db, assigned):
         raise PlannerValidationError("Assigned user must have PLANNER role")
 
     project_member = _project_membership(db, project_id=project_id, user_id=assigned.id)
     if not project_member:
         raise PlannerValidationError("Assigned planner must be a member of the project")
 
-    if not _is_org_admin(acting_user) and assigned.id != acting_user.id:
+    if not _is_org_admin(db, acting_user) and assigned.id != acting_user.id:
         raise PlannerAuthorizationError("Only ORG_ADMIN can assign other planners")
 
     return assigned
@@ -275,7 +277,7 @@ def get_itinerary_for_user(
         return None
 
     if require_edit:
-        if _is_org_admin(user):
+        if _is_org_admin(db, user):
             return itinerary
         membership = _project_membership(db, project_id=project_id, user_id=user.id)
         if not membership or not membership.can_edit:
@@ -522,6 +524,90 @@ def _extract_format(file_name: str) -> str | None:
     return None
 
 
+def _inspect_zip_payload(
+    payload: bytes,
+    *,
+    max_entries: int,
+    max_uncompressed_bytes: int,
+) -> tuple[list[zipfile.ZipInfo], set[str]]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), mode="r") as archive:
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+    except zipfile.BadZipFile as exc:
+        raise PlannerValidationError("Uploaded ZIP content is invalid.") from exc
+
+    if len(infos) > max_entries:
+        raise PlannerValidationError(f"Uploaded ZIP content exceeds the maximum of {max_entries} files.")
+
+    total_uncompressed_bytes = 0
+    for info in infos:
+        total_uncompressed_bytes += info.file_size
+        if total_uncompressed_bytes > max_uncompressed_bytes:
+            raise PlannerValidationError(
+                f"Uploaded ZIP content exceeds the maximum uncompressed size of {max_uncompressed_bytes // (1024 * 1024)} MB."
+            )
+
+    return infos, {info.filename for info in infos}
+
+
+def _detect_csv_import_mime(payload: bytes) -> str | None:
+    if b"\x00" in payload:
+        return None
+
+    try:
+        decoded = payload.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+
+    if not decoded.strip():
+        return None
+
+    sample = decoded[:8192]
+    if any((ord(ch) < 32 and ch not in {"\n", "\r", "\t"}) for ch in sample):
+        return None
+
+    try:
+        dialect = csv.Sniffer().sniff(sample)
+        if dialect.delimiter not in {",", ";", "\t", "|"}:
+            return None
+    except csv.Error:
+        if "," not in sample and "\n" not in sample:
+            return None
+
+    return "text/csv"
+
+
+def _detect_xlsx_import_mime(payload: bytes) -> str | None:
+    settings = get_settings()
+    _, names = _inspect_zip_payload(
+        payload,
+        max_entries=settings.planner_import_archive_max_entries,
+        max_uncompressed_bytes=settings.planner_import_archive_max_uncompressed_bytes,
+    )
+    if "[Content_Types].xml" not in names:
+        return None
+    if not any(name.startswith("xl/") for name in names):
+        return None
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _validate_itinerary_import_payload(file_name: str, content: bytes) -> str:
+    file_format = _extract_format(file_name)
+    if file_format is None:
+        raise PlannerValidationError("Unsupported file type. Upload a .csv or .xlsx file.")
+
+    if file_format == "csv":
+        detected_mime = _detect_csv_import_mime(content)
+        if detected_mime != "text/csv":
+            raise PlannerValidationError("Uploaded .csv file content does not match CSV format.")
+        return file_format
+
+    detected_mime = _detect_xlsx_import_mime(content)
+    if detected_mime != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        raise PlannerValidationError("Uploaded .xlsx file content does not match XLSX format.")
+    return file_format
+
+
 def _parse_csv_rows(content: bytes) -> tuple[list[dict[str, str]], list[str]]:
     errors: list[str] = []
     try:
@@ -716,12 +802,9 @@ def import_itinerary_file(
     if not itinerary:
         return None
 
-    file_format = _extract_format(file_name)
+    file_format = _validate_itinerary_import_payload(file_name, content)
     file_errors: list[str] = []
-    if file_format is None:
-        file_errors.append("Unsupported file type. Upload a .csv or .xlsx file.")
-        parsed_rows: list[dict[str, str]] = []
-    elif file_format == "csv":
+    if file_format == "csv":
         parsed_rows, parse_errors = _parse_csv_rows(content)
         file_errors.extend(parse_errors)
     else:
@@ -1709,20 +1792,24 @@ def export_sync_package_archive(
 
 def _load_sync_archive_entries(content: bytes) -> tuple[dict[str, bytes], list[str]]:
     file_errors: list[str] = []
+    settings = get_settings()
     try:
+        infos, _ = _inspect_zip_payload(
+            content,
+            max_entries=settings.planner_sync_package_max_entries,
+            max_uncompressed_bytes=settings.planner_sync_package_max_uncompressed_bytes,
+        )
         with zipfile.ZipFile(io.BytesIO(content), mode="r") as archive:
             entries: dict[str, bytes] = {}
-            for info in archive.infolist():
-                if info.is_dir():
-                    continue
+            for info in infos:
                 path = info.filename
                 if path.startswith("/") or ".." in path.split("/"):
                     file_errors.append(f"Archive entry path is unsafe: {path}")
                     continue
                 entries[path] = archive.read(path)
             return entries, file_errors
-    except zipfile.BadZipFile:
-        return {}, ["File is not a valid ZIP sync package archive"]
+    except PlannerValidationError as exc:
+        raise PlannerValidationError(str(exc)) from exc
 
 
 def _coerce_optional_float(value: object, *, field_name: str) -> float | None:
@@ -1904,6 +1991,9 @@ def import_sync_package_archive(
     if not project:
         return None
 
+    if not file_name.lower().endswith(".zip"):
+        raise PlannerValidationError("Sync package upload must be a .zip file.")
+
     org = db.execute(select(Organization).where(Organization.id == org_id)).scalars().one()
     receipt: dict[str, object] = {
         "project_id": project.id,
@@ -1918,30 +2008,67 @@ def import_sync_package_archive(
         "rejected_record_count": 0,
         "applied_record_count": 0,
         "file_errors": [],
+        "correction_hints": [],
         "record_results": [],
     }
+
+    def finalize_receipt() -> dict[str, object]:
+        file_errors = [str(message) for message in receipt.get("file_errors", []) if isinstance(message, str)]
+        record_results = [row for row in receipt.get("record_results", []) if isinstance(row, dict)]
+        hints: list[str] = []
+
+        if any("Checksum mismatch" in message for message in file_errors):
+            hints.append("Re-export or retransmit the sync package to restore file integrity before importing again.")
+        if any(
+            marker in message
+            for message in file_errors
+            for marker in (
+                "Manifest",
+                "Data file",
+                "Assets file",
+                "Archive file missing",
+                "Archive entry path is unsafe",
+            )
+        ):
+            hints.append("Create a fresh sync package export from TrailForge before retrying this import.")
+        if any(
+            marker in message
+            for message in file_errors
+            for marker in (
+                "organization does not match",
+                "project code does not match",
+            )
+        ):
+            hints.append("Import the sync package into the matching organization and selected project.")
+        if any(row.get("action") == "conflict" for row in record_results):
+            hints.append("Refresh the destination itinerary state, reconcile local edits, and re-export before importing again.")
+        if any(row.get("action") == "rejected" for row in record_results):
+            hints.append("Review rejected records in the receipt and correct the source itinerary data before the next import.")
+
+        receipt["correction_hints"] = hints
+        return receipt
 
     entries, archive_errors = _load_sync_archive_entries(content)
     if archive_errors:
         receipt["file_errors"] = archive_errors
-        return receipt
+        return finalize_receipt()
 
     file_errors: list[str] = []
     manifest_bytes = entries.get(SYNC_MANIFEST_PATH)
     if not manifest_bytes:
         file_errors.append("Manifest file is missing from archive")
         receipt["file_errors"] = file_errors
-        return receipt
+        return finalize_receipt()
 
     try:
         manifest = json.loads(manifest_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         receipt["file_errors"] = ["Manifest file is not valid UTF-8 JSON"]
-        return receipt
+        return finalize_receipt()
 
     if not isinstance(manifest, dict):
         receipt["file_errors"] = ["Manifest root must be a JSON object"]
-        return receipt
+        return finalize_receipt()
 
     receipt["format_version"] = manifest.get("format_version") if isinstance(manifest.get("format_version"), str) else None
 
@@ -1989,7 +2116,7 @@ def import_sync_package_archive(
 
     if file_errors:
         receipt["file_errors"] = file_errors
-        return receipt
+        return finalize_receipt()
 
     receipt["integrity_validated"] = True
 
@@ -1998,25 +2125,25 @@ def import_sync_package_archive(
     except (UnicodeDecodeError, json.JSONDecodeError):
         receipt["file_errors"] = ["Data file is not valid UTF-8 JSON"]
         receipt["integrity_validated"] = False
-        return receipt
+        return finalize_receipt()
 
     try:
         assets_payload = json.loads(entries[SYNC_ASSETS_PATH].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         receipt["file_errors"] = ["Assets file is not valid UTF-8 JSON"]
         receipt["integrity_validated"] = False
-        return receipt
+        return finalize_receipt()
 
     if not isinstance(data_payload, dict):
         receipt["file_errors"] = ["Data payload root must be a JSON object"]
         receipt["integrity_validated"] = False
-        return receipt
+        return finalize_receipt()
 
     records = data_payload.get("records")
     if not isinstance(records, list):
         receipt["file_errors"] = ["Data payload records must be an array"]
         receipt["integrity_validated"] = False
-        return receipt
+        return finalize_receipt()
 
     attraction_key_by_id: dict[str, str] = {}
     if isinstance(assets_payload, dict) and isinstance(assets_payload.get("attractions"), list):
@@ -2041,7 +2168,9 @@ def import_sync_package_archive(
         catalog_by_key.pop(key, None)
 
     planner_user_by_username = {
-        row.username: row.id for row in list_project_planner_users(db, org_id=org_id, project_id=project_id) if _is_planner(row)
+        row.username: row.id
+        for row in list_project_planner_users(db, org_id=org_id, project_id=project_id)
+        if _is_planner(db, row)
     }
 
     record_results: list[dict[str, object]] = []
@@ -2298,4 +2427,4 @@ def import_sync_package_archive(
     receipt["rejected_record_count"] = rejected
     receipt["applied_record_count"] = inserted + updated
     receipt["record_results"] = record_results
-    return receipt
+    return finalize_receipt()

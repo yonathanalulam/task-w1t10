@@ -6,6 +6,9 @@ import zipfile
 
 from openpyxl import Workbook
 
+from app.api.routes import planner as planner_routes
+from app.core.config import get_settings
+
 
 def login(client, creds: dict[str, str]) -> str:
     response = client.post(
@@ -17,8 +20,13 @@ def login(client, creds: dict[str, str]) -> str:
         },
     )
     assert response.status_code == 200
-    csrf_token = client.cookies.get("trailforge_csrf")
+    session_token = response.cookies.get("trailforge_session")
+    csrf_token = response.cookies.get("trailforge_csrf")
+    assert session_token
     assert csrf_token
+    client.cookies.clear()
+    client.cookies.set("trailforge_session", session_token)
+    client.cookies.set("trailforge_csrf", csrf_token)
     return csrf_token
 
 
@@ -513,6 +521,7 @@ def test_sync_package_export_import_and_conflict_policy(client, test_user):
     assert receipt_conflict["conflict_count"] == 1
     assert receipt_conflict["updated_record_count"] == 0
     assert receipt_conflict["record_results"][0]["action"] == "conflict"
+    assert receipt_conflict["correction_hints"]
 
 
 def test_sync_package_import_integrity_checksum_validation(client, test_user):
@@ -562,6 +571,7 @@ def test_sync_package_import_integrity_checksum_validation(client, test_user):
     receipt = import_response.json()
     assert receipt["integrity_validated"] is False
     assert any("Checksum mismatch" in message for message in receipt["file_errors"])
+    assert receipt["correction_hints"]
 
 
 def test_sync_package_endpoints_support_api_token_auth(client, test_user):
@@ -590,3 +600,82 @@ def test_sync_package_endpoints_support_api_token_auth(client, test_user):
     )
     assert import_response.status_code == 200
     assert import_response.json()["integrity_validated"] is True
+
+
+def test_planner_import_rejects_oversized_upload(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-import-oversized")
+
+    itinerary = client.post(
+        f"/api/projects/{project_id}/itineraries",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "pytest-itinerary-import-oversized", "status": "draft"},
+    )
+    assert itinerary.status_code == 201
+    itinerary_id = itinerary.json()["id"]
+
+    max_bytes = get_settings().planner_import_upload_max_bytes
+    oversized_csv = b"day_number,stop_order,attraction_id,start_time,duration_minutes\n" + (b"1" * max_bytes)
+    monkeypatch.setattr(planner_routes, "_upload_file_size", lambda upload_file: None)
+
+    response = client.post(
+        f"/api/projects/{project_id}/itineraries/{itinerary_id}/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("too-large.csv", oversized_csv, "text/csv")},
+    )
+    assert response.status_code == 413
+
+
+def test_sync_package_import_rejects_oversized_upload(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-sync-oversized")
+    max_bytes = get_settings().planner_sync_package_upload_max_bytes
+    oversized_payload = b"x" * (max_bytes + 1)
+    monkeypatch.setattr(planner_routes, "_upload_file_size", lambda upload_file: None)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-package/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("too-large.zip", oversized_payload, "application/zip")},
+    )
+    assert response.status_code == 413
+
+
+def test_planner_import_rejects_content_type_mismatch(client, test_user):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-import-mime")
+
+    itinerary = client.post(
+        f"/api/projects/{project_id}/itineraries",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "pytest-itinerary-import-mime", "status": "draft"},
+    )
+    assert itinerary.status_code == 201
+    itinerary_id = itinerary.json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/itineraries/{itinerary_id}/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("bad.csv", b"\x00\x01\x02not-csv", "text/csv")},
+    )
+    assert response.status_code == 422
+    assert "does not match CSV format" in response.json()["detail"]
+
+
+def test_planner_sync_import_rejects_archive_entry_limit(client, test_user):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-sync-entry-limit")
+    max_entries = get_settings().planner_sync_package_max_entries
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index in range(max_entries + 1):
+            archive.writestr(f"entry-{index}.txt", b"x")
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-package/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("too-many-entries.zip", payload.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 422
+    assert "maximum of" in response.json()["detail"]

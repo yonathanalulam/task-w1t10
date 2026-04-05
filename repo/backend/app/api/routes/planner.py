@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import PlannerActor, db_dep, planner_csrf_session_dep, planner_session_dep, planner_sync_actor_dep
+from app.core.config import get_settings
 from app.models.auth import Session as AuthSession
 from app.models.organization import Organization
 from app.schemas.planner import (
@@ -33,6 +34,7 @@ from app.schemas.planner import (
 from app.services.planner import (
     PlannerAuthorizationError,
     PlannerConflictError,
+    PlannerPayloadTooLargeError,
     PlannerValidationError,
     analyze_day,
     archive_itinerary,
@@ -60,6 +62,7 @@ from app.services.audit import record_audit_event
 from app.services.lineage import record_lineage_event
 
 router = APIRouter(tags=["planner"])
+UPLOAD_READ_CHUNK_BYTES = 64 * 1024
 
 
 def _day_out(day, day_analysis: dict) -> ItineraryDayOut:
@@ -563,6 +566,44 @@ def _safe_download_filename(value: str, *, default: str) -> str:
     return sanitized or default
 
 
+def _upload_file_size(upload_file: UploadFile) -> int | None:
+    stream = upload_file.file
+    if not hasattr(stream, "seek") or not hasattr(stream, "tell"):
+        return None
+    position = stream.tell()
+    try:
+        stream.seek(0, io.SEEK_END)
+        return int(stream.tell())
+    finally:
+        stream.seek(position)
+
+
+def _enforce_upload_size(upload_file: UploadFile, *, max_bytes: int, label: str) -> None:
+    size = _upload_file_size(upload_file)
+    if size is not None and size > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{label} exceeds the maximum allowed size of {max_bytes // (1024 * 1024)} MB",
+        )
+
+
+async def _read_upload_bounded(upload_file: UploadFile, *, max_bytes: int, label: str) -> bytes:
+    _enforce_upload_size(upload_file, max_bytes=max_bytes, label=label)
+    total_bytes = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await upload_file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise PlannerPayloadTooLargeError(
+                f"{label} exceeds the maximum allowed size of {max_bytes // (1024 * 1024)} MB"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.get("/projects/{project_id}/itineraries/{itinerary_id}/export")
 def itinerary_export(
     project_id: str,
@@ -602,8 +643,9 @@ async def itinerary_import(
     auth_session: AuthSession = Depends(planner_csrf_session_dep),
     db: Session = Depends(db_dep),
 ) -> ItineraryImportReceiptOut:
+    max_bytes = get_settings().planner_import_upload_max_bytes
     try:
-        content = await file.read()
+        content = await _read_upload_bounded(file, max_bytes=max_bytes, label="Itinerary import file")
         receipt = import_itinerary_file(
             db,
             org_id=auth_session.user.org_id,
@@ -615,6 +657,10 @@ async def itinerary_import(
         )
     except PlannerAuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except PlannerPayloadTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+    except PlannerValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Itinerary not found")
@@ -716,8 +762,9 @@ async def sync_package_import(
     actor: PlannerActor = Depends(planner_sync_actor_dep),
     db: Session = Depends(db_dep),
 ) -> SyncPackageImportReceiptOut:
+    max_bytes = get_settings().planner_sync_package_upload_max_bytes
     try:
-        content = await file.read()
+        content = await _read_upload_bounded(file, max_bytes=max_bytes, label="Sync package file")
         receipt = import_sync_package_archive(
             db,
             org_id=actor.user.org_id,
@@ -728,6 +775,10 @@ async def sync_package_import(
         )
     except PlannerAuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except PlannerPayloadTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+    except PlannerValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")

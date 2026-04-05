@@ -13,6 +13,7 @@ from app.models.message_center import MessageDeliveryAttempt, MessageDispatch, M
 from app.models.organization import Organization
 from app.models.planner import Itinerary
 from app.models.user import User
+from app.services.authorization import user_has_any_permission
 from app.services.message_delivery import MessageDeliveryRequest, build_default_connector_registry
 
 TEMPLATE_VARIABLE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
@@ -42,12 +43,8 @@ class MessageCenterConflictError(Exception):
     """Raised when unique/message-center write conflicts happen."""
 
 
-def _role_names(user: User) -> set[str]:
-    return {user_role.role.name for user_role in user.user_roles}
-
-
-def _is_org_admin(user: User) -> bool:
-    return "ORG_ADMIN" in _role_names(user)
+def _is_org_admin(db: Session, user: User) -> bool:
+    return user_has_any_permission(db, user_id=user.id, required_permissions=("org.manage",))
 
 
 def _project_membership(db: Session, *, project_id: str, user_id: str) -> ProjectMember | None:
@@ -70,7 +67,7 @@ def _project_for_user(
     if not project:
         return None
 
-    if _is_org_admin(user):
+    if _is_org_admin(db, user):
         return project
 
     membership = _project_membership(db, project_id=project_id, user_id=user.id)
@@ -108,7 +105,7 @@ def _resolve_itinerary_scope(
         require_edit
         and itinerary.assigned_planner_user_id
         and itinerary.assigned_planner_user_id != user.id
-        and not _is_org_admin(user)
+        and not _is_org_admin(db, user)
     ):
         raise MessageCenterAuthorizationError("Itinerary is assigned to another planner")
     return itinerary

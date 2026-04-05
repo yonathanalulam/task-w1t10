@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.main import app
 from app.models.operations import AuditEvent, BackupRun, LineageEvent, RetentionPolicy, RetentionRun
 from app.models.organization import Organization
 from app.services.operations import run_encrypted_backup, run_itinerary_retention, run_nightly_backups_for_all_orgs, run_restore_from_backup, run_retention_for_all_orgs
@@ -27,8 +29,13 @@ def login(client, creds: dict[str, str]) -> str:
         },
     )
     assert response.status_code == 200
-    csrf_token = client.cookies.get("trailforge_csrf")
+    session_token = response.cookies.get("trailforge_session")
+    csrf_token = response.cookies.get("trailforge_csrf")
+    assert session_token
     assert csrf_token
+    client.cookies.clear()
+    client.cookies.set("trailforge_session", session_token)
+    client.cookies.set("trailforge_csrf", csrf_token)
     return csrf_token
 
 
@@ -66,8 +73,9 @@ def step_up(client, csrf: str, *, password: str) -> None:
     assert response.status_code == 200
 
 
-def test_ops_retention_backup_restore_and_audit(client, test_user):
+def test_ops_retention_backup_restore_and_audit(client, db, test_user):
     csrf = login(client, test_user)
+    org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
 
     policy_before = client.get("/api/ops/retention-policy")
     assert policy_before.status_code == 200
@@ -95,6 +103,34 @@ def test_ops_retention_backup_restore_and_audit(client, test_user):
     backup_file_name = run_backup.json()["backup_file_name"]
     assert backup_file_name
 
+    db.add(
+        AuditEvent(
+            org_id=org.id,
+            actor_user_id=test_user["user_id"],
+            action_type="pytest.restore.preserved_audit",
+            resource_type="restore",
+            resource_id="preserved-audit",
+            request_method="POST",
+            request_path="/pytest/restore/preserved-audit",
+            status_code=200,
+            detail_summary="immutable audit written after backup",
+            metadata_json=None,
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        LineageEvent(
+            org_id=org.id,
+            created_by_user_id=test_user["user_id"],
+            event_type="pytest.restore.preserved_lineage",
+            entity_type="restore",
+            entity_id="preserved-lineage",
+            payload={"kind": "preserved"},
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
     audits_after_backup = client.get("/api/ops/audit/events?limit=50")
     assert audits_after_backup.status_code == 200
     assert "operations.backup_run" in {row["action_type"] for row in audits_after_backup.json()}
@@ -107,8 +143,9 @@ def test_ops_retention_backup_restore_and_audit(client, test_user):
         headers={"X-CSRF-Token": csrf},
         json={"backup_file_name": backup_file_name},
     )
-    assert run_restore.status_code == 200, run_restore.text
+    assert run_restore.status_code == 200, f"Restore failed: {run_restore.text}"
     assert run_restore.json()["status"] == "succeeded"
+    csrf_restored = login(client, test_user)
 
     projects = client.get("/api/projects")
     assert projects.status_code == 200
@@ -120,6 +157,11 @@ def test_ops_retention_backup_restore_and_audit(client, test_user):
     action_types = {row["action_type"] for row in audits.json()}
     assert "operations.retention_policy_updated" in action_types
     assert "operations.restore_run" in action_types
+    assert "pytest.restore.preserved_audit" in action_types
+
+    lineage = client.get("/api/ops/lineage/events?limit=50")
+    assert lineage.status_code == 200
+    assert "pytest.restore.preserved_lineage" in {row["event_type"] for row in lineage.json()}
 
 
 def test_ops_restore_requires_step_up(client, test_user):
@@ -364,105 +406,179 @@ def test_retention_cycle_covers_all_orgs_and_deduplicates(db, other_org_admin):
 
 def test_postgresql_like_retention_and_restore_toggle_immutable_triggers(db, test_user, monkeypatch):
     org = db.execute(select(Organization).where(Organization.slug == test_user["org_slug"])).scalars().one()
+    dialect_name = db.bind.dialect.name if db.bind is not None else ""
 
-    for statement in [
-        "DROP TRIGGER IF EXISTS trg_audit_events_immutable_update",
-        "DROP TRIGGER IF EXISTS trg_audit_events_immutable_delete",
-        "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_update",
-        "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_delete",
-    ]:
-        db.execute(text(statement))
-    db.commit()
-
-    stale_time = datetime.now(UTC) - timedelta(days=400)
-    db.add(
-        AuditEvent(
-            org_id=org.id,
-            actor_user_id=test_user["user_id"],
-            action_type="pytest.pg_retention",
-            resource_type="retention",
-            resource_id="pg-audit-stale",
-            request_method="POST",
-            request_path="/pytest/pg-retention",
-            status_code=200,
-            detail_summary="stale audit",
-            metadata_json=None,
-            occurred_at=stale_time,
-        )
-    )
-    db.add(
-        LineageEvent(
-            org_id=org.id,
-            created_by_user_id=test_user["user_id"],
-            event_type="pytest.pg_retention",
-            entity_type="retention",
-            entity_id="pg-lineage-stale",
-            payload={"kind": "stale"},
-            occurred_at=stale_time,
-        )
-    )
-    db.commit()
+    if dialect_name.startswith("postgresql"):
+        drop_statements = [
+            "DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events",
+            "DROP TRIGGER IF EXISTS trg_lineage_events_immutable ON lineage_events",
+        ]
+        create_statements = [
+            """
+            CREATE TRIGGER trg_audit_events_immutable
+            BEFORE UPDATE OR DELETE ON audit_events
+            FOR EACH ROW EXECUTE FUNCTION prevent_immutable_mutation();
+            """,
+            """
+            CREATE TRIGGER trg_lineage_events_immutable
+            BEFORE UPDATE OR DELETE ON lineage_events
+            FOR EACH ROW EXECUTE FUNCTION prevent_immutable_mutation();
+            """,
+        ]
+    else:
+        drop_statements = [
+            "DROP TRIGGER IF EXISTS trg_audit_events_immutable_update",
+            "DROP TRIGGER IF EXISTS trg_audit_events_immutable_delete",
+            "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_update",
+            "DROP TRIGGER IF EXISTS trg_lineage_events_immutable_delete",
+        ]
+        create_statements = [
+            """
+            CREATE TRIGGER trg_audit_events_immutable_update
+            BEFORE UPDATE ON audit_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table audit_events cannot be UPDATE');
+            END;
+            """,
+            """
+            CREATE TRIGGER trg_audit_events_immutable_delete
+            BEFORE DELETE ON audit_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table audit_events cannot be DELETE');
+            END;
+            """,
+            """
+            CREATE TRIGGER trg_lineage_events_immutable_update
+            BEFORE UPDATE ON lineage_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be UPDATE');
+            END;
+            """,
+            """
+            CREATE TRIGGER trg_lineage_events_immutable_delete
+            BEFORE DELETE ON lineage_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Immutable table lineage_events cannot be DELETE');
+            END;
+            """,
+        ]
 
     original_execute = db.execute
-    pg_sql: list[str] = []
 
-    def tracked_execute(statement, *args, **kwargs):
-        rendered = str(statement).strip()
-        if rendered.startswith('ALTER TABLE "audit_events"') or rendered.startswith('ALTER TABLE "lineage_events"'):
-            pg_sql.append(rendered)
+    try:
+        for statement in drop_statements:
+            db.execute(text(statement))
+        db.commit()
 
-            class _Result:
-                rowcount = 0
-
-            return _Result()
-        return original_execute(statement, *args, **kwargs)
-
-    monkeypatch.setattr(db.bind.dialect, "name", "postgresql", raising=False)
-    monkeypatch.setattr(db, "execute", tracked_execute)
-
-    retention_run = run_itinerary_retention(db, org_id=org.id, actor_user_id=test_user["user_id"])
-    assert retention_run.status == "succeeded"
-    assert 'ALTER TABLE "audit_events" DISABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "lineage_events" DISABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "audit_events" ENABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "lineage_events" ENABLE TRIGGER USER' in pg_sql
-
-    pg_sql.clear()
-    backup_run = run_encrypted_backup(
-        db,
-        org_id=org.id,
-        initiated_by_user_id=test_user["user_id"],
-        trigger_kind="manual",
-        enforce_one_per_day=False,
-    )
-    db.add(
-        AuditEvent(
-            org_id=org.id,
-            actor_user_id=test_user["user_id"],
-            action_type="pytest.pg_restore.extra",
-            resource_type="restore",
-            resource_id="pg-restore-extra",
-            request_method="POST",
-            request_path="/pytest/pg-restore",
-            status_code=200,
-            detail_summary="extra audit after backup",
-            metadata_json=None,
-            occurred_at=datetime.now(UTC),
+        stale_time = datetime.now(UTC) - timedelta(days=400)
+        db.add(
+            AuditEvent(
+                org_id=org.id,
+                actor_user_id=test_user["user_id"],
+                action_type="pytest.pg_retention",
+                resource_type="retention",
+                resource_id="pg-audit-stale",
+                request_method="POST",
+                request_path="/pytest/pg-retention",
+                status_code=200,
+                detail_summary="stale audit",
+                metadata_json=None,
+                occurred_at=stale_time,
+            )
         )
-    )
-    db.commit()
+        db.add(
+            LineageEvent(
+                org_id=org.id,
+                created_by_user_id=test_user["user_id"],
+                event_type="pytest.pg_retention",
+                entity_type="retention",
+                entity_id="pg-lineage-stale",
+                payload={"kind": "stale"},
+                occurred_at=stale_time,
+            )
+        )
+        db.commit()
 
-    restore_run = run_restore_from_backup(
-        db,
-        org_id=org.id,
-        initiated_by_user_id=test_user["user_id"],
-        backup_file_name=backup_run.backup_file_name,
-    )
-    assert restore_run.status == "succeeded"
-    assert 'ALTER TABLE "audit_events" DISABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "lineage_events" DISABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "audit_events" ENABLE TRIGGER USER' in pg_sql
-    assert 'ALTER TABLE "lineage_events" ENABLE TRIGGER USER' in pg_sql
+        pg_sql: list[str] = []
+
+        def tracked_execute(statement, *args, **kwargs):
+            rendered = str(statement).strip()
+            if rendered.startswith('ALTER TABLE "audit_events"') or rendered.startswith('ALTER TABLE "lineage_events"'):
+                pg_sql.append(rendered)
+
+                class _Result:
+                    rowcount = 0
+
+                return _Result()
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(db.bind.dialect, "name", "postgresql", raising=False)
+        monkeypatch.setattr(db, "execute", tracked_execute)
+
+        retention_run = run_itinerary_retention(db, org_id=org.id, actor_user_id=test_user["user_id"])
+        assert retention_run.status == "succeeded"
+        assert 'ALTER TABLE "audit_events" DISABLE TRIGGER USER' in pg_sql
+        assert 'ALTER TABLE "lineage_events" DISABLE TRIGGER USER' in pg_sql
+        assert 'ALTER TABLE "audit_events" ENABLE TRIGGER USER' in pg_sql
+        assert 'ALTER TABLE "lineage_events" ENABLE TRIGGER USER' in pg_sql
+
+        pg_sql.clear()
+        backup_run = run_encrypted_backup(
+            db,
+            org_id=org.id,
+            initiated_by_user_id=test_user["user_id"],
+            trigger_kind="manual",
+            enforce_one_per_day=False,
+        )
+        db.add(
+            AuditEvent(
+                org_id=org.id,
+                actor_user_id=test_user["user_id"],
+                action_type="pytest.pg_restore.extra",
+                resource_type="restore",
+                resource_id="pg-restore-extra",
+                request_method="POST",
+                request_path="/pytest/pg-restore",
+                status_code=200,
+                detail_summary="extra audit after backup",
+                metadata_json=None,
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        db.add(
+            LineageEvent(
+                org_id=org.id,
+                created_by_user_id=test_user["user_id"],
+                event_type="pytest.pg_restore.extra",
+                entity_type="restore",
+                entity_id="pg-restore-extra",
+                payload={"kind": "extra"},
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+
+        restore_run = run_restore_from_backup(
+            db,
+            org_id=org.id,
+            initiated_by_user_id=test_user["user_id"],
+            backup_file_name=backup_run.backup_file_name,
+        )
+        assert restore_run.status == "succeeded"
+        assert pg_sql == []
+        audit_action_types = set(
+            db.execute(select(AuditEvent.action_type).where(AuditEvent.org_id == org.id)).scalars().all()
+        )
+        lineage_event_types = set(
+            db.execute(select(LineageEvent.event_type).where(LineageEvent.org_id == org.id)).scalars().all()
+        )
+        assert "pytest.pg_restore.extra" in audit_action_types
+        assert "pytest.pg_restore.extra" in lineage_event_types
+    finally:
+        db.rollback()
+        for statement in create_statements:
+            original_execute(text(statement))
+        db.commit()
 
 
 def test_ops_lineage_visibility_and_immutable_tables(client, db, test_user):
@@ -618,60 +734,56 @@ def test_non_auditor_non_admin_cannot_read_ops_history(client, planner_user):
     assert denied_backup.status_code == 403
 
 
-def test_backup_restore_remains_tenant_scoped(client, test_user, other_org_admin):
-    csrf_a = login(client, test_user)
-    dataset_a_before = create_dataset(client, csrf_a, suffix="org-a-before")
+def test_backup_restore_remains_tenant_scoped(test_user, other_org_admin):
+    with TestClient(app, base_url="https://testserver") as client_a:
+        csrf_a = login(client_a, test_user)
+        dataset_a_before = create_dataset(client_a, csrf_a, suffix="org-a-before")
 
-    run_backup = client.post("/api/ops/backups/run", headers={"X-CSRF-Token": csrf_a})
-    assert run_backup.status_code == 200
-    backup_file_name = run_backup.json()["backup_file_name"]
-    assert backup_file_name
+        run_backup = client_a.post("/api/ops/backups/run", headers={"X-CSRF-Token": csrf_a})
+        assert run_backup.status_code == 200
+        backup_file_name = run_backup.json()["backup_file_name"]
+        assert backup_file_name
 
-    dataset_a_after = create_dataset(client, csrf_a, suffix="org-a-after")
+        dataset_a_after = create_dataset(client_a, csrf_a, suffix="org-a-after")
 
-    logout_a = client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf_a})
-    assert logout_a.status_code == 204
+    with TestClient(app, base_url="https://testserver") as client_b:
+        csrf_b = login(client_b, other_org_admin)
+        step_up(client_b, csrf_b, password=other_org_admin["password"])
+        dataset_b = create_dataset(client_b, csrf_b, suffix="org-b")
 
-    csrf_b = login(client, other_org_admin)
-    step_up(client, csrf_b, password=other_org_admin["password"])
-    dataset_b = create_dataset(client, csrf_b, suffix="org-b")
+        cross_org_restore = client_b.post(
+            "/api/ops/restore",
+            headers={"X-CSRF-Token": csrf_b},
+            json={"backup_file_name": backup_file_name},
+        )
+        assert cross_org_restore.status_code == 422, f"Restore failed: {cross_org_restore.text}"
+        assert "scope does not match target organization" in cross_org_restore.json()["detail"]
 
-    cross_org_restore = client.post(
-        "/api/ops/restore",
-        headers={"X-CSRF-Token": csrf_b},
-        json={"backup_file_name": backup_file_name},
-    )
-    assert cross_org_restore.status_code == 422
-    assert "scope does not match target organization" in cross_org_restore.json()["detail"]
+        org_b_datasets = client_b.get("/api/datasets")
+        assert org_b_datasets.status_code == 200
+        org_b_dataset_ids = {row["id"] for row in org_b_datasets.json()}
+        assert dataset_b in org_b_dataset_ids
 
-    org_b_datasets = client.get("/api/datasets")
-    assert org_b_datasets.status_code == 200
-    org_b_dataset_ids = {row["id"] for row in org_b_datasets.json()}
-    assert dataset_b in org_b_dataset_ids
+    with TestClient(app, base_url="https://testserver") as client_a_restore:
+        csrf_a_restore = login(client_a_restore, test_user)
+        step_up(client_a_restore, csrf_a_restore, password=test_user["password"])
+        restore_org_a = client_a_restore.post(
+            "/api/ops/restore",
+            headers={"X-CSRF-Token": csrf_a_restore},
+            json={"backup_file_name": backup_file_name},
+        )
+        assert restore_org_a.status_code == 200, f"Restore failed: {restore_org_a.text}"
+        csrf_a_restored = login(client_a_restore, test_user)
 
-    logout_b = client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf_b})
-    assert logout_b.status_code == 204
+        org_a_datasets = client_a_restore.get("/api/datasets")
+        assert org_a_datasets.status_code == 200
+        org_a_dataset_ids = {row["id"] for row in org_a_datasets.json()}
+        assert dataset_a_before in org_a_dataset_ids
+        assert dataset_a_after not in org_a_dataset_ids
 
-    csrf_a_restore = login(client, test_user)
-    step_up(client, csrf_a_restore, password=test_user["password"])
-    restore_org_a = client.post(
-        "/api/ops/restore",
-        headers={"X-CSRF-Token": csrf_a_restore},
-        json={"backup_file_name": backup_file_name},
-    )
-    assert restore_org_a.status_code == 200, restore_org_a.text
-
-    org_a_datasets = client.get("/api/datasets")
-    assert org_a_datasets.status_code == 200
-    org_a_dataset_ids = {row["id"] for row in org_a_datasets.json()}
-    assert dataset_a_before in org_a_dataset_ids
-    assert dataset_a_after not in org_a_dataset_ids
-
-    logout_a_restore = client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf_a_restore})
-    assert logout_a_restore.status_code == 204
-
-    csrf_b_verify = login(client, other_org_admin)
-    org_b_datasets_after = client.get("/api/datasets")
-    assert org_b_datasets_after.status_code == 200
-    org_b_dataset_ids_after = {row["id"] for row in org_b_datasets_after.json()}
-    assert dataset_b in org_b_dataset_ids_after
+    with TestClient(app, base_url="https://testserver") as client_b_verify:
+        login(client_b_verify, other_org_admin)
+        org_b_datasets_after = client_b_verify.get("/api/datasets")
+        assert org_b_datasets_after.status_code == 200
+        org_b_dataset_ids_after = {row["id"] for row in org_b_datasets_after.json()}
+        assert dataset_b in org_b_dataset_ids_after

@@ -20,8 +20,8 @@ This repository currently provides a production-oriented foundation through **Sl
 - deterministic duplicate detection using normalized `name + city + state`
 - duplicate review and merge workflow with merge-event history snapshots
 - planner-core itinerary workflow with day/stop planning, drag-reorder, warnings, and version history
-- planner itinerary import/export with CSV/XLSX support and row-level import receipts
-- offline sync package export/import with manifest+checksum integrity checks and conflict-aware apply results
+- planner itinerary import/export with CSV/XLSX support, row-level import receipts, 5 MB upload ceilings, and XLSX archive entry/uncompressed-size hardening
+- offline sync package export/import with manifest+checksum integrity checks, conflict-aware apply results, 5 MB upload ceilings, and ZIP entry/uncompressed-size hardening
 - project-scoped resource center for attraction/itinerary assets with controlled media validation, upload progress, previews, checksums, cleanup-eligibility marking, and automatic grace-period cleanup execution
 - project-scoped message center with reusable templates, variable render preview, in-app drafting/send flow, delivery-attempt timeline, offline connector abstraction points, and enforced frequency caps
 - immutable audit-trail events for sensitive domain/operator actions with query surface
@@ -58,7 +58,8 @@ This repository currently provides a production-oriented foundation through **Sl
   - `GET /api/projects/{project_id}/members`
   - `POST /api/projects/{project_id}/members` (requires recent step-up)
   - `PATCH/DELETE /api/projects/{project_id}/members/{member_id}` (requires recent step-up)
-  - `GET/POST /api/projects/{project_id}/datasets/{dataset_id}` (POST for link)
+  - `GET /api/projects/{project_id}/datasets`
+  - `POST /api/projects/{project_id}/datasets/{dataset_id}` (link)
   - `DELETE /api/projects/{project_id}/datasets/{dataset_id}` (unlink)
 - planner endpoints (ORG_ADMIN + PLANNER with project scoping):
   - `GET /api/planner/projects`
@@ -130,7 +131,7 @@ This repository currently provides a production-oriented foundation through **Sl
 - planner surface includes itinerary/day/stop CRUD, project-linked attraction catalog adds, drag-and-drop stop ordering, overlap/activity warnings, save-state/version feedback, CSV/XLSX import/export with row-level receipts, offline sync package export/import with conflict outcome visibility, and resource-center attraction/itinerary asset workflows with upload progress + server validation feedback + image/document previews
 - message center surface includes reusable template management, real placeholder rendering preview (`traveler_name`, `departure_time`, etc.), in-app send workflow, and persisted message + delivery-attempt timeline with enforced caps (max 3/day/user, max 1/hour/category/user)
 - operations surface includes immutable audit timeline, lineage event visibility for merge/import/sync, retention policy + run history, encrypted backup runs, and restore flow with step-up enforcement
-- org-scoped backup/restore applies only to the caller's organization data and rejects cross-org restore attempts
+- org-scoped backup/restore applies only to the caller's organization data, rejects cross-org restore attempts, and preserves existing immutable audit/lineage history with append-only restore semantics
 - non-admin/non-auditor users are intentionally gated from admin and audit routes and redirected to an in-app restricted surface
 - Pinia auth bootstrap/login/logout/step-up store
 - route guards tied to server-validated session state (auth state is refreshed on navigation)
@@ -151,6 +152,14 @@ This repository currently provides a production-oriented foundation through **Sl
 ```bash
 docker compose up --build
 ```
+
+For temporary local HTTP testing without changing `docker-compose.yml`, start Compose from a shell that overrides the secure-cookie setting:
+
+```bash
+TF_SESSION_COOKIE_SECURE=false docker compose up --build
+```
+
+Leave the variable unset for the default secure HTTPS runtime.
 
 ### Full test suite
 
@@ -213,6 +222,7 @@ docker compose down -v
 - Operator guide: `ops/backups/README.md`
 - Backups are encrypted and written under `TF_BACKUP_ROOT` (default `/var/lib/trailforge/backups`) with 14-day rotation.
 - Backup and restore scope is tenant-safe: each backup snapshot is bound to one organization and restore only applies to that same organization.
+- Restore replays mutable org-scoped business data while preserving existing immutable audit and lineage history as append-only records.
 - Automatic nightly backup execution is provided by the Compose `ops-daemon` runtime service.
 - One-shot helper command (manual trigger) remains available:
 
