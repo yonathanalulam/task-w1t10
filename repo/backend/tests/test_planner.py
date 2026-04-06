@@ -602,6 +602,18 @@ def test_sync_package_endpoints_support_api_token_auth(client, test_user):
     assert import_response.json()["integrity_validated"] is True
 
 
+def test_planner_upload_limits_match_20_mb_requirement():
+    settings = get_settings()
+    twenty_mb = 20 * 1024 * 1024
+
+    assert settings.planner_import_upload_max_bytes == twenty_mb
+    assert settings.planner_sync_package_upload_max_bytes == twenty_mb
+    assert settings.planner_import_archive_max_entry_bytes == twenty_mb
+    assert settings.planner_sync_package_max_entry_bytes == twenty_mb
+    assert settings.planner_import_archive_max_uncompressed_bytes >= twenty_mb
+    assert settings.planner_sync_package_max_uncompressed_bytes >= twenty_mb
+
+
 def test_planner_import_rejects_oversized_upload(client, test_user, monkeypatch):
     csrf = login(client, test_user)
     project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-import-oversized")
@@ -639,6 +651,95 @@ def test_sync_package_import_rejects_oversized_upload(client, test_user, monkeyp
         files={"file": ("too-large.zip", oversized_payload, "application/zip")},
     )
     assert response.status_code == 413
+
+
+def test_planner_import_accepts_file_just_under_20_mb_limit(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, attraction_id, _ = create_project_dataset_catalog(client, csrf, suffix="planner-import-near-limit")
+
+    itinerary = client.post(
+        f"/api/projects/{project_id}/itineraries",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "pytest-itinerary-import-near-limit", "status": "draft"},
+    )
+    assert itinerary.status_code == 201
+    itinerary_id = itinerary.json()["id"]
+
+    header = b"day_number,stop_order,attraction_id,start_time,duration_minutes,stop_notes\n"
+    row_prefix = b"1,1," + attraction_id.encode("utf-8") + b",09:00,60,"
+    filler = b"A" * (get_settings().planner_import_upload_max_bytes - len(header) - len(row_prefix))
+    near_limit_csv = header + row_prefix + filler
+
+    assert len(near_limit_csv) == get_settings().planner_import_upload_max_bytes
+
+    expected_receipt = {
+        "itinerary_id": itinerary_id,
+        "project_id": project_id,
+        "file_name": "near-limit.csv",
+        "file_format": "csv",
+        "imported_at": "2026-01-01T00:00:00Z",
+        "applied": False,
+        "total_rows": 0,
+        "accepted_row_count": 0,
+        "rejected_row_count": 0,
+        "applied_day_count": 0,
+        "applied_stop_count": 0,
+        "file_errors": [],
+        "accepted_rows": [],
+        "rejected_rows": [],
+    }
+    monkeypatch.setattr(planner_routes, "import_itinerary_file", lambda *args, **kwargs: expected_receipt)
+
+    response = client.post(
+        f"/api/projects/{project_id}/itineraries/{itinerary_id}/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("near-limit.csv", near_limit_csv, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["file_name"] == "near-limit.csv"
+
+
+def test_sync_package_import_accepts_file_just_under_20_mb_limit(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-sync-near-limit")
+    max_bytes = get_settings().planner_sync_package_upload_max_bytes
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("manifest.json", json.dumps({"package_type": "invalid"}).encode("utf-8"))
+        archive.writestr("padding.bin", b"x" * (max_bytes - 2048))
+
+    archive_bytes = payload.getvalue()
+    assert len(archive_bytes) < max_bytes
+
+    expected_receipt = {
+        "project_id": project_id,
+        "file_name": "near-limit.zip",
+        "imported_at": "2026-01-01T00:00:00Z",
+        "format_version": None,
+        "integrity_validated": False,
+        "total_record_count": 0,
+        "inserted_record_count": 0,
+        "updated_record_count": 0,
+        "conflict_count": 0,
+        "rejected_record_count": 0,
+        "applied_record_count": 0,
+        "file_errors": ["simulated validation failure after upload acceptance"],
+        "correction_hints": [],
+        "record_results": [],
+    }
+    monkeypatch.setattr(planner_routes, "import_sync_package_archive", lambda *args, **kwargs: expected_receipt)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-package/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("near-limit.zip", archive_bytes, "application/zip")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["file_name"] == "near-limit.zip"
+    assert response.json()["file_errors"]
 
 
 def test_planner_import_rejects_content_type_mismatch(client, test_user):
@@ -679,3 +780,78 @@ def test_planner_sync_import_rejects_archive_entry_limit(client, test_user):
     )
     assert response.status_code == 422
     assert "maximum of" in response.json()["detail"]
+
+
+def test_sync_package_import_rejects_oversized_archive_entry(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-sync-entry-size")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "planner_sync_package_max_entry_bytes", 1024)
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data/huge.json", b"x" * 1025)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-package/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("oversized-entry.zip", payload.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 422
+    assert "entry 'data/huge.json' exceeds the maximum uncompressed size" in response.json()["detail"]
+
+
+def test_sync_package_import_rejects_excessive_compression_ratio(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-sync-ratio")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "planner_archive_max_compression_ratio", 5)
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data/high-ratio.json", b"A" * 16_384)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync-package/import",
+        headers={"X-CSRF-Token": csrf},
+        files={"file": ("high-ratio.zip", payload.getvalue(), "application/zip")},
+    )
+    assert response.status_code == 422
+    assert "compression ratio" in response.json()["detail"]
+
+
+def test_planner_import_rejects_xlsx_with_excessive_compression_ratio(client, test_user, monkeypatch):
+    csrf = login(client, test_user)
+    project_id, _, _, _ = create_project_dataset_catalog(client, csrf, suffix="planner-import-xlsx-ratio")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "planner_archive_max_compression_ratio", 5)
+
+    itinerary = client.post(
+        f"/api/projects/{project_id}/itineraries",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "pytest-itinerary-import-xlsx-ratio", "status": "draft"},
+    )
+    assert itinerary.status_code == 201
+    itinerary_id = itinerary.json()["id"]
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            b"<?xml version='1.0' encoding='UTF-8'?><Types xmlns='http://schemas.openxmlformats.org/package/2006/content-types'></Types>",
+        )
+        archive.writestr("xl/workbook.xml", b"A" * 16_384)
+
+    response = client.post(
+        f"/api/projects/{project_id}/itineraries/{itinerary_id}/import",
+        headers={"X-CSRF-Token": csrf},
+        files={
+            "file": (
+                "high-ratio.xlsx",
+                payload.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert "compression ratio" in response.json()["detail"]

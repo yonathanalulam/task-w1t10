@@ -1,6 +1,5 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote_plus
 
 from pydantic import Field
@@ -38,12 +37,15 @@ class Settings(BaseSettings):
     token_encryption_key_path: str = "/bootstrap/token_encryption.key"
     asset_storage_root: str = "/var/lib/trailforge/assets"
     asset_upload_max_bytes: int = 20 * 1024 * 1024
-    planner_import_upload_max_bytes: int = 5 * 1024 * 1024
+    planner_import_upload_max_bytes: int = 20 * 1024 * 1024
     planner_import_archive_max_entries: int = 200
-    planner_import_archive_max_uncompressed_bytes: int = 25 * 1024 * 1024
-    planner_sync_package_upload_max_bytes: int = 5 * 1024 * 1024
+    planner_import_archive_max_uncompressed_bytes: int = 60 * 1024 * 1024
+    planner_import_archive_max_entry_bytes: int = 20 * 1024 * 1024
+    planner_sync_package_upload_max_bytes: int = 20 * 1024 * 1024
     planner_sync_package_max_entries: int = 64
-    planner_sync_package_max_uncompressed_bytes: int = 25 * 1024 * 1024
+    planner_sync_package_max_uncompressed_bytes: int = 60 * 1024 * 1024
+    planner_sync_package_max_entry_bytes: int = 20 * 1024 * 1024
+    planner_archive_max_compression_ratio: int = 100
     asset_cleanup_grace_days: int = 30
     itinerary_retention_default_days: int = 365 * 3
     audit_retention_days: int = Field(default=365, ge=365, le=365)
@@ -87,15 +89,3 @@ settings = get_settings()
 
 def clear_settings_cache() -> None:
     get_settings.cache_clear()
-
-
-def settings_for_log() -> dict[str, Any]:
-    settings = get_settings()
-    return {
-        "app_env": settings.app_env,
-        "session_cookie_secure": settings.TF_SESSION_COOKIE_SECURE,
-        "allowed_origins": settings.allowed_origins,
-        "csrf_cookie_name": settings.csrf_cookie_name,
-        "db_host": settings.db_host,
-        "db_name": settings.db_name,
-    }

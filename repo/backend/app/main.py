@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import api_router
-from app.core.config import get_settings, settings_for_log
+from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.logging import configure_logging
 from app.services.bootstrap import ensure_bootstrap_state
@@ -34,8 +34,4 @@ app.include_router(api_router)
 
 @app.get("/")
 def root() -> dict[str, object]:
-    return {
-        "service": settings.app_name,
-        "environment": settings_for_log(),
-        "docs": "/docs",
-    }
+    return {"status": "ok"}

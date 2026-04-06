@@ -10,3 +10,13 @@ def test_readiness(client):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+def test_root_returns_minimal_service_status(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert "environment" not in response.json()
+    assert "service" not in response.json()
+    assert "docs" not in response.json()

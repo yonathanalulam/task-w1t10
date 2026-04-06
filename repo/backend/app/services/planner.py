@@ -52,6 +52,7 @@ SYNC_PACKAGE_FORMAT_VERSION = "1.0"
 SYNC_MANIFEST_PATH = "manifest.json"
 SYNC_DATA_PATH = "data/itineraries.json"
 SYNC_ASSETS_PATH = "assets/attractions.json"
+ZIP_READ_CHUNK_BYTES = 64 * 1024
 
 
 class PlannerConflictError(Exception):
@@ -529,6 +530,8 @@ def _inspect_zip_payload(
     *,
     max_entries: int,
     max_uncompressed_bytes: int,
+    max_entry_bytes: int,
+    max_compression_ratio: int,
 ) -> tuple[list[zipfile.ZipInfo], set[str]]:
     try:
         with zipfile.ZipFile(io.BytesIO(payload), mode="r") as archive:
@@ -541,6 +544,16 @@ def _inspect_zip_payload(
 
     total_uncompressed_bytes = 0
     for info in infos:
+        if info.file_size > max_entry_bytes:
+            raise PlannerValidationError(
+                f"Uploaded ZIP entry '{info.filename}' exceeds the maximum uncompressed size of {max_entry_bytes // (1024 * 1024)} MB."
+            )
+        if info.file_size > 0 and info.compress_size <= 0:
+            raise PlannerValidationError(f"Uploaded ZIP entry '{info.filename}' has invalid compressed size metadata.")
+        if info.compress_size > 0 and (info.file_size / info.compress_size) > max_compression_ratio:
+            raise PlannerValidationError(
+                f"Uploaded ZIP entry '{info.filename}' exceeds the maximum compression ratio of {max_compression_ratio}:1."
+            )
         total_uncompressed_bytes += info.file_size
         if total_uncompressed_bytes > max_uncompressed_bytes:
             raise PlannerValidationError(
@@ -583,6 +596,8 @@ def _detect_xlsx_import_mime(payload: bytes) -> str | None:
         payload,
         max_entries=settings.planner_import_archive_max_entries,
         max_uncompressed_bytes=settings.planner_import_archive_max_uncompressed_bytes,
+        max_entry_bytes=settings.planner_import_archive_max_entry_bytes,
+        max_compression_ratio=settings.planner_archive_max_compression_ratio,
     )
     if "[Content_Types].xml" not in names:
         return None
@@ -1798,15 +1813,35 @@ def _load_sync_archive_entries(content: bytes) -> tuple[dict[str, bytes], list[s
             content,
             max_entries=settings.planner_sync_package_max_entries,
             max_uncompressed_bytes=settings.planner_sync_package_max_uncompressed_bytes,
+            max_entry_bytes=settings.planner_sync_package_max_entry_bytes,
+            max_compression_ratio=settings.planner_archive_max_compression_ratio,
         )
         with zipfile.ZipFile(io.BytesIO(content), mode="r") as archive:
             entries: dict[str, bytes] = {}
+            total_read_bytes = 0
             for info in infos:
                 path = info.filename
                 if path.startswith("/") or ".." in path.split("/"):
                     file_errors.append(f"Archive entry path is unsafe: {path}")
                     continue
-                entries[path] = archive.read(path)
+                entry_buffer = bytearray()
+                with archive.open(info, mode="r") as entry_stream:
+                    while True:
+                        chunk = entry_stream.read(ZIP_READ_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        entry_buffer.extend(chunk)
+                        if len(entry_buffer) > settings.planner_sync_package_max_entry_bytes:
+                            raise PlannerValidationError(
+                                f"Uploaded ZIP entry '{path}' exceeds the maximum uncompressed size of {settings.planner_sync_package_max_entry_bytes // (1024 * 1024)} MB."
+                            )
+                        total_read_bytes += len(chunk)
+                        if total_read_bytes > settings.planner_sync_package_max_uncompressed_bytes:
+                            raise PlannerValidationError(
+                                "Uploaded ZIP content exceeds the maximum uncompressed size of "
+                                f"{settings.planner_sync_package_max_uncompressed_bytes // (1024 * 1024)} MB."
+                            )
+                entries[path] = bytes(entry_buffer)
             return entries, file_errors
     except PlannerValidationError as exc:
         raise PlannerValidationError(str(exc)) from exc

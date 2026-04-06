@@ -20,8 +20,8 @@ This repository currently provides a production-oriented foundation through **Sl
 - deterministic duplicate detection using normalized `name + city + state`
 - duplicate review and merge workflow with merge-event history snapshots
 - planner-core itinerary workflow with day/stop planning, drag-reorder, warnings, and version history
-- planner itinerary import/export with CSV/XLSX support, row-level import receipts, 5 MB upload ceilings, and XLSX archive entry/uncompressed-size hardening
-- offline sync package export/import with manifest+checksum integrity checks, conflict-aware apply results, 5 MB upload ceilings, and ZIP entry/uncompressed-size hardening
+- planner itinerary import/export with CSV/XLSX support, row-level import receipts, 20 MB upload ceilings, and XLSX archive entry/uncompressed-size hardening
+- offline sync package export/import with manifest+checksum integrity checks, conflict-aware apply results, 20 MB upload ceilings, and ZIP entry/uncompressed-size hardening
 - project-scoped resource center for attraction/itinerary assets with controlled media validation, upload progress, previews, checksums, cleanup-eligibility marking, and automatic grace-period cleanup execution
 - project-scoped message center with reusable templates, variable render preview, in-app drafting/send flow, delivery-attempt timeline, offline connector abstraction points, and enforced frequency caps
 - immutable audit-trail events for sensitive domain/operator actions with query surface
@@ -59,8 +59,8 @@ This repository currently provides a production-oriented foundation through **Sl
   - `POST /api/projects/{project_id}/members` (requires recent step-up)
   - `PATCH/DELETE /api/projects/{project_id}/members/{member_id}` (requires recent step-up)
   - `GET /api/projects/{project_id}/datasets`
-  - `POST /api/projects/{project_id}/datasets/{dataset_id}` (link)
-  - `DELETE /api/projects/{project_id}/datasets/{dataset_id}` (unlink)
+  - `POST /api/projects/{project_id}/datasets/{dataset_id}`
+  - `DELETE /api/projects/{project_id}/datasets/{dataset_id}`
 - planner endpoints (ORG_ADMIN + PLANNER with project scoping):
   - `GET /api/planner/projects`
   - `GET /api/planner/users`

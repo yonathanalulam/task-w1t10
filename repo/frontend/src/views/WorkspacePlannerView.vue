@@ -866,7 +866,7 @@ onMounted(loadProjects);
 
         <div class="stack">
           <label>
-            Import sync package (.zip)
+            Import sync package (.zip, max 20 MB)
             <input
               data-testid="planner-sync-import-file-input"
               type="file"
@@ -1214,7 +1214,7 @@ onMounted(loadProjects);
 
         <div class="stack">
           <label>
-            Import file (.csv or .xlsx)
+            Import file (.csv or .xlsx, max 20 MB)
             <input
               data-testid="planner-import-file-input"
               type="file"
