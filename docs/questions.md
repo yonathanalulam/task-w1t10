@@ -1,87 +1,69 @@
-# TrailForge clarification questions
+1. Clarification Defaults for Planning
+Question: Can the drafted clarification defaults be used for planning?
 
-Status: approved
-Approved on: 2026-04-02
+My Understanding: The prompt was large enough that planning needed explicit confirmation that the clarification package was acceptable. We needed to lock this in rather than carrying uncertainty forward into the planning phase.
 
-This file is the clarification question record for TrailForge. The full original prompt is preserved in `../metadata.json`. The developer-facing implementation brief lives in `../.ai/clarification-prompt.md`.
+Solution: Yes. Proceed with the drafted defaults, allowing planning to start from the approved clarification brief instead of an uncertain baseline.
 
-## Questions asked to the user
+2. Offline Deployment Style
+Question: What offline deployment style should the initial build assume?
 
-### 1) Can the drafted clarification defaults be used for planning?
+My Understanding: The prompt required a fully offline system but did not force or prescribe a specific local deployment mechanism.
 
-- **Why this was asked:** the prompt was large enough that planning needed explicit confirmation that the clarification package was acceptable.
-- **Answer:** yes — proceed with the drafted defaults.
-- **Effect on execution:** planning could start from the approved clarification brief instead of carrying uncertainty forward.
+Solution: Use Docker Compose as the default offline deployment path. The project runtime contract will use docker compose up --build as the primary launch command.
 
-### 2) What offline deployment style should the initial build assume?
+3. Excel Support Handling
+Question: How should Excel support be handled in the first implementation pass?
 
-- **Why this was asked:** the prompt required a fully offline system but did not force a specific local deployment mechanism.
-- **Answer:** use Docker Compose as the default offline deployment path.
-- **Effect on execution:** the project runtime contract uses `docker compose up --build` as the primary launch command.
+My Understanding: The prompt required CSV/Excel support but did not specify whether legacy .xls format support was necessary alongside modern formats.
 
-### 3) How should Excel support be handled in the first implementation pass?
+Solution: Support .xlsx plus CSV, and do not include legacy .xls in the first pass. Import/export planning and validation will target the newer .xlsx standard.
 
-- **Why this was asked:** the prompt required CSV/Excel support but did not specify whether legacy `.xls` was required.
-- **Answer:** support `.xlsx` plus CSV; do not include legacy `.xls` in the first pass.
-- **Effect on execution:** import/export planning and validation target `.xlsx` rather than the older Excel format.
+4. Frontend Implementation Stack
+Question: What specific technologies should be used for the frontend implementation?
 
-## Safe defaults locked during clarification
+My Understanding: The prompt already required a Vue workspace and a modern frontend framework. We need a default that keeps the implementation conventional and robust without changing the product scope.
 
-These were treated as safe defaults because they sharpen execution without narrowing the approved product intent.
+Solution: Use Vue 3 + Vite + TypeScript + Vue Router + Pinia.
 
-### Frontend implementation default
+5. Backend Implementation Stack
+Question: What specific technologies should be used for the backend implementation?
 
-- **Decision:** Vue 3 + Vite + TypeScript + Vue Router + Pinia.
-- **Rationale:** the prompt already required a Vue workspace and a modern frontend framework. This default keeps the implementation conventional and strong without changing product scope.
+My Understanding: The prompt already required FastAPI and PostgreSQL. We need to define the expected persistence, schema, and migration foundations based on those requirements.
 
-### Backend implementation default
+Solution: Use FastAPI + SQLAlchemy + Alembic + Pydantic.
 
-- **Decision:** FastAPI + SQLAlchemy + Alembic + Pydantic.
-- **Rationale:** the prompt already required FastAPI and PostgreSQL. These choices provide the expected persistence, schema, and migration foundations.
+6. Offline Sync Package Shape
+Question: How should the file structure for the offline sync package be defined?
 
-### Offline sync package shape
+My Understanding: The prompt required an offline sync package for cross-device transfer but did not define the specific file structure or mechanism for this package.
 
-- **Decision:** use a versioned portable archive containing manifest metadata, serialized payloads, checksums, and referenced assets.
-- **Rationale:** the prompt required an offline sync package for cross-device transfer but did not define the file structure.
+Solution: Use a versioned portable archive containing manifest metadata, serialized payloads, checksums, and referenced assets.
 
-### HTTPS setup approach
+7. HTTPS Setup Approach
+Question: How should HTTPS be handled for a local-network offline environment?
 
-- **Decision:** use a locally generated certificate workflow and document trust/setup steps.
-- **Rationale:** the prompt required local-network HTTPS, so clarification locked a practical offline-safe way to satisfy it.
+My Understanding: The prompt required local-network HTTPS, so we need a practical, offline-safe way to satisfy this requirement without relying on external, internet-dependent certificate authorities.
 
-### Resource preview behavior for non-image files
+Solution: Use a locally generated certificate workflow and explicitly document the trust/setup steps for the end user.
 
-- **Decision:** use document preview/file cards for non-image assets, with stronger thumbnail behavior where applicable.
-- **Rationale:** the prompt required thumbnail previews and controlled media handling, but non-image assets need a different presentation than images.
+8. Non-Image Resource Preview Behavior
+Question: How should resource previews be handled for non-image files?
 
-### Reserved outbound connector approach
+My Understanding: The prompt required thumbnail previews and controlled media handling, but non-image assets inherently need a different presentation strategy than standard image files.
 
-- **Decision:** keep SMS/email/push as provider abstraction points and disabled placeholders in v1.
-- **Rationale:** the prompt explicitly said those connectors should be reserved but not required for offline operation.
+Solution: Use document preview/file cards for non-image assets, while preserving stronger thumbnail behavior where applicable for images.
 
-### Scheduled operations approach
+9. Reserved Outbound Connectors
+Question: How should SMS, email, and push notifications be implemented in an offline-first system?
 
-- **Decision:** backups, retention cleanup, and orphan-file cleanup will run as app-managed scheduled jobs suitable for a single-node offline deployment.
-- **Rationale:** the prompt required these recurring operations but did not prescribe the scheduling mechanism.
+My Understanding: The prompt explicitly stated that these connectors should be reserved for future use, but they are not required for core offline operations.
 
-## Non-assumptions intentionally preserved during clarification
+Solution: Keep SMS, email, and push as provider abstraction points, implementing them as disabled placeholders in v1.
 
-These were kept open during clarification so the prompt would not be narrowed too early.
+10. Scheduled Operations Management
+Question: How should recurring tasks like backups and cleanup be scheduled?
 
-- **Secure collaboration:** clarification did not prematurely force either live collaboration or non-live collaboration.
-- **Excel support before approval:** clarification did not assume `.xlsx`-only support until the user explicitly approved it.
-- **File validation semantics:** clarification kept basic signature validation explicit alongside MIME and extension validation.
+My Understanding: The prompt required recurring operations (backups, retention cleanup, orphan-file cleanup) but did not prescribe the specific scheduling mechanism to be used in an offline environment.
 
-## Clarification risks carried into planning
-
-- Offline HTTPS must remain usable in a real local-network setup.
-- Drag-and-drop reorder plus autosave cannot be brittle or laggy.
-- Import receipts must stay readable and actionable at row level.
-- File validation must stay strict on extension, MIME, and signature checks.
-- Backup and restore must be real operator flows, not placeholders.
-
-## Clarification outcome
-
-- The clarification package was validated for prompt faithfulness before approval.
-- User approval was obtained for the planning baseline.
-- Planning was allowed to proceed from the approved clarification brief.
+Solution: Run these operations as app-managed scheduled jobs suitable for a single-node offline deployment.
