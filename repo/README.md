@@ -1,5 +1,7 @@
 # TrailForge (Slices 1-9 Foundation)
 
+**Project type: fullstack**
+
 TrailForge is an offline-first itinerary management platform for travel operations teams.
 
 This repository currently provides a production-oriented foundation through **Slice 1 + Slice 2 + Slice 3 + Slice 4 + Slice 5 + Slice 6 + Slice 7 + Slice 8 + Slice 9**:
@@ -149,6 +151,14 @@ This repository currently provides a production-oriented foundation through **Sl
 
 ### Launch
 
+Canonical Docker startup (required form):
+
+```bash
+docker-compose up
+```
+
+The modern Docker CLI also accepts the space form and, for a full rebuild:
+
 ```bash
 docker compose up --build
 ```
@@ -156,32 +166,83 @@ docker compose up --build
 For temporary local HTTP testing without changing `docker-compose.yml`, start Compose from a shell that overrides the secure-cookie setting:
 
 ```bash
-TF_SESSION_COOKIE_SECURE=false docker compose up --build
+TF_SESSION_COOKIE_SECURE=false docker-compose up
 ```
 
 Leave the variable unset for the default secure HTTPS runtime.
 
 ### Full test suite
 
+The full test suite is Docker-only and runs inside the `backend-tests`, `frontend-tests`, and `e2e-tests` Compose services:
+
 ```bash
 ./run_tests.sh
 ```
 
-## Focused local verification helpers
+`run_tests.sh` orchestrates `docker compose` profiles; no local language toolchain is required. Runtime dependencies (Python, Node, Postgres, Playwright) are provided entirely by Docker images.
 
-Primary owner gate remains `./run_tests.sh`, but backend local pytest is self-contained from clean checkout (no Docker secrets required):
+## Verification
 
-```bash
-cd backend
-python3 -m pip install --user --break-system-packages -r requirements.txt -r requirements-dev.txt
-pytest -q
-```
+### API verification (curl)
 
-`backend/tests/conftest.py` auto-configures a local SQLite test URL and runs Alembic migrations when Docker DB settings are absent.
+All backend endpoints are served over HTTPS at `https://localhost:8443` with a self-signed cert (use `-k` for local trust). A green stack answers all three of these:
 
-## First-run credentials
+1. Liveness probe:
 
-On first startup, backend creates one-time bootstrap admin credentials and stores the password encrypted at rest in:
+    ```bash
+    curl -k -i https://localhost:8443/api/health/live
+    # Expected: HTTP/1.1 200 OK
+    # Expected body: {"status":"ok"}
+    ```
+
+2. Readiness probe (executes a trivial DB query before responding):
+
+    ```bash
+    curl -k -i https://localhost:8443/api/health/ready
+    # Expected: HTTP/1.1 200 OK
+    # Expected body: {"status":"ready"}
+    ```
+
+3. Demo login (ORG_ADMIN) — see **Demo credentials** below:
+
+    ```bash
+    curl -k -i -c cookies.txt \
+      -H "Content-Type: application/json" \
+      -d '{"org_slug":"default-org","username":"demo-admin","password":"TrailForgeDemo!123"}' \
+      https://localhost:8443/api/auth/login
+    # Expected: HTTP/1.1 200 OK
+    # Expected body: {"user":{"username":"demo-admin","roles":["ORG_ADMIN"], ...}}
+
+    curl -k -b cookies.txt https://localhost:8443/api/auth/me
+    # Expected: HTTP/1.1 200 OK with the same user payload
+    ```
+
+### Web UI verification checklist
+
+Open `https://localhost:5173` in a browser (accept the self-signed cert) and walk through:
+
+- [ ] `/login` renders the TrailForge sign-in card with Organization, Username, and Password fields.
+- [ ] Sign in with `default-org` / `demo-admin` / `TrailForgeDemo!123` → redirected to `/workspace`.
+- [ ] Workspace sidebar shows **Overview**, **Planner**, **Message Center**, **Datasets**, **Projects**, **Operations** for ORG_ADMIN.
+- [ ] Sign out, sign back in as `demo-planner` / `TrailForgeDemo!123` → sidebar shows Planner + Message Center only (no Datasets/Projects/Operations).
+- [ ] Sign out, sign back in as `demo-auditor` / `TrailForgeDemo!123` → sidebar shows Audit & Lineage; mutation buttons on visible surfaces are absent.
+- [ ] Visiting `/workspace/operations` as the auditor redirects to the restricted surface (no 500 page).
+
+## Demo credentials
+
+The backend provisions deterministic, non-production demo seed users during bootstrap for local Docker/dev so reviewers can sign in without running the encrypted bootstrap helper. **These users are intended only for local development and must not be used in production.**
+
+| Role | Organization | Username | Password |
+|---|---|---|---|
+| ORG_ADMIN | `default-org` | `demo-admin` | `TrailForgeDemo!123` |
+| PLANNER | `default-org` | `demo-planner` | `TrailForgeDemo!123` |
+| AUDITOR | `default-org` | `demo-auditor` | `TrailForgeDemo!123` |
+
+Demo seeding is controlled by `TF_DEMO_SEED_USERS` (default `true` in `docker-compose.yml`). Set `TF_DEMO_SEED_USERS=false` to skip demo user provisioning.
+
+### First-run bootstrap admin (optional, encrypted)
+
+In addition to the demo users above, the backend also writes one-time encrypted bootstrap credentials for a long-lived `admin` user to:
 
 ```text
 /bootstrap/admin_credentials.txt
@@ -193,7 +254,7 @@ Read and consume it once with:
 docker compose exec backend python scripts/read_bootstrap_credentials.py
 ```
 
-The helper decrypts the envelope and deletes it after a successful read, so `cat /bootstrap/admin_credentials.txt` is no longer the bootstrap flow.
+The helper decrypts the envelope and deletes it after a successful read.
 
 Change credentials in later slices via admin flows (not implemented yet).
 

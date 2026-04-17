@@ -51,6 +51,7 @@ services:
       TF_TOKEN_ENCRYPTION_KEY_PATH: /bootstrap/token_encryption.key
       TF_BACKUP_ENCRYPTION_KEY_PATH: /run/secrets/backup_encryption_key
       TF_BACKUP_ROOT: /var/lib/trailforge/backups
+      TF_DEMO_SEED_USERS: "${TF_DEMO_SEED_USERS:-true}"
     volumes:
       - trailforge_certs:/certs
       - trailforge_bootstrap:/bootstrap

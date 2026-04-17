@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str = "admin"
     bootstrap_creds_path: str = "/bootstrap/admin_credentials.txt"
     token_encryption_key_path: str = "/bootstrap/token_encryption.key"
+    demo_seed_users_enabled: bool = Field(default=False, alias="TF_DEMO_SEED_USERS")
+    demo_seed_password: str = "TrailForgeDemo!123"
     asset_storage_root: str = "/var/lib/trailforge/assets"
     asset_upload_max_bytes: int = 20 * 1024 * 1024
     planner_import_upload_max_bytes: int = 20 * 1024 * 1024

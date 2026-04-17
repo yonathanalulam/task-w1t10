@@ -39,6 +39,13 @@ ROLE_MAP: dict[str, list[str]] = {
 }
 
 
+DEMO_SEED_USERS: dict[str, str] = {
+    "demo-admin": "ORG_ADMIN",
+    "demo-planner": "PLANNER",
+    "demo-auditor": "AUDITOR",
+}
+
+
 def ensure_bootstrap_state(db: Session) -> None:
     settings = get_settings()
 
@@ -53,6 +60,8 @@ def ensure_bootstrap_state(db: Session) -> None:
     roles = _ensure_roles(db, org.id)
     _ensure_role_permissions(db, roles, permissions)
     _ensure_admin_user(db, org.id, roles["ORG_ADMIN"].id)
+    if settings.demo_seed_users_enabled:
+        _ensure_demo_seed_users(db, org.id, roles)
 
 
 def _ensure_permissions(db: Session) -> dict[str, Permission]:
@@ -137,6 +146,41 @@ def _ensure_admin_user(db: Session, org_id: str, admin_role_id: str) -> None:
         "Bootstrap admin user created. Retrieve one-time credentials from %s with the bootstrap read helper",
         settings.bootstrap_creds_path,
     )
+
+
+def _ensure_demo_seed_users(db: Session, org_id: str, roles: dict[str, Role]) -> None:
+    settings = get_settings()
+    demo_password_hash = hash_password(settings.demo_seed_password)
+
+    for username, role_name in DEMO_SEED_USERS.items():
+        role = roles.get(role_name)
+        if role is None:
+            continue
+
+        existing_user = (
+            db.execute(select(User).where(User.org_id == org_id, User.username == username))
+            .scalars()
+            .first()
+        )
+        if existing_user:
+            _ensure_user_role(db, existing_user.id, role.id)
+            continue
+
+        user = User(
+            org_id=org_id,
+            username=username,
+            password_hash=demo_password_hash,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        _ensure_user_role(db, user.id, role.id)
+        logger.warning(
+            "Demo seed user '%s' provisioned for role %s (non-production only)",
+            username,
+            role_name,
+        )
 
 
 def _ensure_user_role(db: Session, user_id: str, role_id: str) -> None:

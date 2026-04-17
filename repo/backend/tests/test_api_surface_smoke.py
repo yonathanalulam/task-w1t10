@@ -27,10 +27,18 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
 
     users = client.get("/api/admin/users")
     assert users.status_code == 200
-    planner_id = next(user["id"] for user in users.json() if user["username"] == planner_user["username"])
+    users_payload = users.json()
+    assert isinstance(users_payload, list)
+    assert {user["username"] for user in users_payload} >= {test_user["username"], planner_user["username"]}
+    planner_row = next(user for user in users_payload if user["username"] == planner_user["username"])
+    planner_id = planner_row["id"]
+    assert planner_row["id"] == planner_user["user_id"]
+    assert "password" not in planner_row and "password_hash" not in planner_row
 
     planner_users = client.get("/api/planner/users")
     assert planner_users.status_code == 200
+    planner_user_ids = {row["id"] for row in planner_users.json()}
+    assert planner_id in planner_user_ids, "planner listing must include the seeded planner"
 
     dataset = client.post(
         "/api/datasets",
@@ -38,7 +46,11 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"name": "pytest-surface-dataset", "description": "surface", "status": "active"},
     )
     assert dataset.status_code == 201
-    dataset_id = dataset.json()["id"]
+    dataset_body = dataset.json()
+    assert dataset_body["name"] == "pytest-surface-dataset"
+    assert dataset_body["status"] == "active"
+    assert dataset_body["description"] == "surface"
+    dataset_id = dataset_body["id"]
 
     project = client.post(
         "/api/projects",
@@ -46,14 +58,22 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"name": "pytest-surface-project", "code": "SURFACE", "description": "surface", "status": "active"},
     )
     assert project.status_code == 201
-    project_id = project.json()["id"]
+    project_body = project.json()
+    assert project_body["name"] == "pytest-surface-project"
+    assert project_body["status"] == "active"
+    project_id = project_body["id"]
 
     link_dataset = client.post(f"/api/projects/{project_id}/datasets/{dataset_id}", headers={"X-CSRF-Token": csrf})
     assert link_dataset.status_code == 201
+    link_body = link_dataset.json()
+    assert link_body["dataset_id"] == dataset_id
 
     list_project_datasets = client.get(f"/api/projects/{project_id}/datasets")
     assert list_project_datasets.status_code == 200
-    assert list_project_datasets.json()[0]["dataset_id"] == dataset_id
+    linked = list_project_datasets.json()
+    assert len(linked) == 1
+    assert linked[0]["dataset_id"] == dataset_id
+    assert linked[0]["dataset_name"] == "pytest-surface-dataset"
 
     add_member = client.post(
         f"/api/projects/{project_id}/members",
@@ -61,10 +81,18 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"user_id": planner_id, "role_in_project": "planner", "can_edit": True},
     )
     assert add_member.status_code == 201
+    member_body = add_member.json()
+    assert member_body["user_id"] == planner_id
+    assert member_body["role_in_project"] == "planner"
+    assert member_body["can_edit"] is True
 
     list_members = client.get(f"/api/projects/{project_id}/members")
     assert list_members.status_code == 200
-    assert any(member["user_id"] == planner_id for member in list_members.json())
+    members = list_members.json()
+    planner_member = next(member for member in members if member["user_id"] == planner_id)
+    assert planner_member["role_in_project"] == "planner"
+    assert planner_member["can_edit"] is True
+    assert planner_member["username"] == planner_user["username"]
 
     attraction = client.post(
         f"/api/datasets/{dataset_id}/attractions",
@@ -81,11 +109,17 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         },
     )
     assert attraction.status_code == 201
-    attraction_id = attraction.json()["id"]
+    attraction_body = attraction.json()
+    assert attraction_body["name"] == "pytest-surface-attraction"
+    assert attraction_body["city"] == "Austin"
+    assert attraction_body["state"] == "TX"
+    attraction_id = attraction_body["id"]
 
     catalog = client.get(f"/api/projects/{project_id}/catalog/attractions")
     assert catalog.status_code == 200
-    assert any(row["id"] == attraction_id for row in catalog.json())
+    catalog_row = next((row for row in catalog.json() if row["id"] == attraction_id), None)
+    assert catalog_row is not None, "project catalog must surface attraction via linked dataset"
+    assert catalog_row["name"] == "pytest-surface-attraction"
 
     itinerary = client.post(
         f"/api/projects/{project_id}/itineraries",
@@ -93,14 +127,20 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"name": "pytest-surface-itinerary", "status": "draft", "assigned_planner_user_id": planner_id},
     )
     assert itinerary.status_code == 201
-    itinerary_id = itinerary.json()["id"]
+    itinerary_body = itinerary.json()
+    assert itinerary_body["name"] == "pytest-surface-itinerary"
+    assert itinerary_body["status"] == "draft"
+    assert itinerary_body.get("assigned_planner_user_id") == planner_id
+    itinerary_id = itinerary_body["id"]
 
     itinerary_list = client.get(f"/api/projects/{project_id}/itineraries")
     assert itinerary_list.status_code == 200
-    assert any(row["id"] == itinerary_id for row in itinerary_list.json())
+    listed = next((row for row in itinerary_list.json() if row["id"] == itinerary_id), None)
+    assert listed is not None and listed["name"] == "pytest-surface-itinerary"
 
     itinerary_get = client.get(f"/api/projects/{project_id}/itineraries/{itinerary_id}")
     assert itinerary_get.status_code == 200
+    assert itinerary_get.json()["id"] == itinerary_id
 
     itinerary_patch = client.patch(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}",
@@ -108,6 +148,7 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"description": "surface-updated"},
     )
     assert itinerary_patch.status_code == 200
+    assert itinerary_patch.json().get("description") == "surface-updated"
 
     add_day = client.post(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}/days",
@@ -115,7 +156,10 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"day_number": 1, "title": "Surface Day"},
     )
     assert add_day.status_code == 200
-    day_id = add_day.json()["days"][0]["id"]
+    day_payload = add_day.json()["days"][0]
+    assert day_payload["title"] == "Surface Day"
+    assert day_payload["day_number"] == 1
+    day_id = day_payload["id"]
 
     patch_day = client.patch(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}/days/{day_id}",
@@ -123,6 +167,8 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"title": "Surface Day Updated"},
     )
     assert patch_day.status_code == 200
+    updated_day = next(day for day in patch_day.json()["days"] if day["id"] == day_id)
+    assert updated_day["title"] == "Surface Day Updated"
 
     add_stop = client.post(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}/days/{day_id}/stops",
@@ -130,7 +176,11 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"attraction_id": attraction_id, "start_minute_of_day": 540, "duration_minutes": 90},
     )
     assert add_stop.status_code == 200
-    stop_id = add_stop.json()["days"][0]["stops"][0]["id"]
+    stop_payload = add_stop.json()["days"][0]["stops"][0]
+    assert stop_payload["attraction_id"] == attraction_id
+    assert stop_payload["start_minute_of_day"] == 540
+    assert stop_payload["duration_minutes"] == 90
+    stop_id = stop_payload["id"]
 
     patch_stop = client.patch(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}/days/{day_id}/stops/{stop_id}",
@@ -138,6 +188,12 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
         json={"duration_minutes": 95},
     )
     assert patch_stop.status_code == 200
+    updated_stop = next(
+        stop
+        for stop in patch_stop.json()["days"][0]["stops"]
+        if stop["id"] == stop_id
+    )
+    assert updated_stop["duration_minutes"] == 95
 
     delete_stop = client.delete(
         f"/api/projects/{project_id}/itineraries/{itinerary_id}/days/{day_id}/stops/{stop_id}",
@@ -162,7 +218,19 @@ def test_additional_route_surface_smoke(client, test_user, planner_user):
 
     retention_run = client.post("/api/ops/retention/run", headers={"X-CSRF-Token": csrf})
     assert retention_run.status_code == 200
+    run_body = retention_run.json()
+    assert "id" in run_body, f"retention run response missing id: {run_body!r}"
+    assert run_body["status"] == "succeeded", (
+        f"retention run must record terminal success status, got {run_body.get('status')!r}"
+    )
+    assert run_body.get("completed_at"), "retention run must have a completed_at timestamp after a synchronous success"
+    for counter in ("deleted_itinerary_count", "deleted_audit_event_count", "deleted_lineage_event_count"):
+        assert isinstance(run_body.get(counter), int), f"expected int for {counter}, got {run_body.get(counter)!r}"
 
     retention_runs = client.get("/api/ops/retention/runs?limit=10")
     assert retention_runs.status_code == 200
-    assert any(row["id"] == retention_run.json()["id"] for row in retention_runs.json())
+    runs_list = retention_runs.json()
+    assert len(runs_list) <= 10
+    recorded_run = next((row for row in runs_list if row["id"] == run_body["id"]), None)
+    assert recorded_run is not None, "just-triggered retention run must be visible in history listing"
+    assert recorded_run["status"] == "succeeded"
